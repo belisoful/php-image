@@ -48,6 +48,23 @@ class BinaryReaderTest extends PHPUnit\Framework\TestCase
 		self::assertFalse((new BinaryReader(new TestNonSeekableStream('abc')))->isSeekable());
 	}
 
+	public function testSeekThrowsOnANonSeekableResource()
+	{
+		// A pipe is a non-seekable resource, so fseek() fails deterministically on every PHP
+		// version.  (A past-end seek on php://memory used to fail too, but PHP 8.3 made it
+		// succeed, so that path is not a reliable way to reach this guard.)
+		$pipe = TestIOHelper::pipeResource('some bytes');
+		$reader = new BinaryReader($pipe);
+		self::assertFalse($reader->isSeekable());
+		try {
+			$reader->seek(2);
+			self::fail('seek() must throw on a non-seekable resource.');
+		} catch (\RuntimeException $e) {
+			self::assertStringContainsString('seek', $e->getMessage());
+		}
+		TestIOHelper::closeAny($pipe);
+	}
+
 	public function testReadBytesReadsExactly()
 	{
 		foreach (self::bothKinds('abcdefgh') as $kind => $source) {

@@ -108,7 +108,7 @@ class BinaryReader
 			$this->_source->seek($offset, $whence);
 			return;
 		}
-		if (fseek($this->_source, $offset, $whence) !== 0) {
+		if (@fseek($this->_source, $offset, $whence) !== 0) {
 			throw new \RuntimeException('Unable to seek to stream position ' . $offset);
 		}
 	}
