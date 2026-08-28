@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+	Configuration for the branch-coverage job only (tests/test_tools/branch-gate.php).
+
+	It is phpunit.xml with one difference: the stream and bit-IO layers are out of the
+	path-coverage scope.  Xdebug's path coverage records every distinct path through each
+	function, and `BitReader::readBits()`, `BitWriter::writeBits()`, and
+	`Stream::read()`/`write()` are branch-dense functions the compression codecs call tens
+	of thousands of times per test, so instrumenting them makes the run combinatorial.
+
+	Measured: `LZWCompressorTest` alone takes 24 seconds with them out of scope and over
+	four minutes with them in.  Across the whole suite the difference decides whether the
+	job is usable at all — in scope it had not finished after two and a half hours, out of
+	scope it completes in roughly the same time as the equivalent run on the pre-port
+	repository (4131 seconds there, where these classes were framework code and so were
+	never in `src` to begin with).
+
+	They are not left unchecked.  Both directories stay in the ordinary line-coverage gate
+	(`phpunit.xml`, complete but for the exemptions counted in `coverage-gate.php`), and
+	PHPStan level 4 reports a condition that can never flip — which is the defect branch
+	coverage exists to catch.  This also keeps the branch gate's scope the same as it was
+	when these classes lived in the framework, outside the project's own `src`.
+-->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" bootstrap="./tests/test_tools/phpunit_bootstrap.php" colors="true" stopOnFailure="false" xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/10.5/phpunit.xsd" cacheDirectory=".phpunit.cache">
+  <source>
+	<include>
+	  <directory suffix=".php">./src</directory>
+	</include>
+	<exclude>
+	  <directory suffix=".php">./src/Stream</directory>
+	  <directory suffix=".php">./src/Util</directory>
+	</exclude>
+  </source>
+  <testsuites>
+	<testsuite name="unit">
+	  <directory suffix="Test.php">./tests/unit</directory>
+	</testsuite>
+  </testsuites>
+  <php>
+	<const name="PHP_IMAGE_TEST_RUN" value="true"/>
+  </php>
+</phpunit>

@@ -1,0 +1,120 @@
+name: php-image
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  composerext:
+    name: Image (PHP ${{ matrix.php-versions }}${{ matrix.imagick && ', GD + ImageMagick' || ', GD only' }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php-versions: ['8.1', '8.2', '8.3', '8.4']
+        imagick: [true]
+        include:
+          # ext-imagick is only "suggested", so one job proves the claim: on a GD-only
+          # install the suite must still pass, with the Imagick-path tests skipping
+          # cleanly rather than erroring.
+          - php-versions: '8.3'
+            imagick: false
+
+    defaults:
+      run:
+        working-directory: php-image
+
+    steps:
+      - name: Checkout library
+        uses: actions/checkout@v5
+        with:
+          path: php-image
+
+      - name: Setup PHP, with composer and extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-versions }}
+          extensions: ctype, dom, gd, iconv, ${{ matrix.imagick && 'imagick, ' || '' }}intl, json, mbstring, pcre, spl
+          tools: php-cs-fixer, phpstan, cs2pr
+          coverage: pcov
+
+      - name: Validate composer.json and composer.lock
+        run: composer validate --strict
+
+      - name: Validate code syntax using php-cs-fixer
+        run: php-cs-fixer fix -vvv --dry-run --using-cache=no --format=checkstyle | cs2pr
+
+      - name: Validate test syntax using php-cs-fixer
+        run: php-cs-fixer fix tests -vvv --dry-run --using-cache=no --format=checkstyle | cs2pr
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php${{ matrix.php-versions }}-composer-${{ hashFiles('php-image/composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php-versions }}-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Validate code using phpstan
+        run: phpstan analyse --error-format=checkstyle | cs2pr
+
+      - name: Run Unit Tests
+        if: ${{ !matrix.imagick }}
+        run: composer unittest
+
+      # The full-extension jobs carry both raster backends, so this run is the one that
+      # reaches every ImageGraphicsGD *and* ImageGraphicsImagick path; the gate then
+      # requires each source file to be completely covered except the few lines that are
+      # unreachable from a test for a reason recorded in AGENTS.md.
+      - name: Run Unit Tests with coverage (GD and ImageMagick)
+        if: ${{ matrix.imagick }}
+        run: vendor/bin/phpunit --testsuite unit --coverage-clover build/logs/clover.xml
+
+      - name: Enforce coverage
+        if: ${{ matrix.imagick }}
+        run: php tests/test_tools/coverage-gate.php build/logs/clover.xml
+
+  branches:
+    # Branch coverage lives beside the rest of CI rather than in its own workflow, but it
+    # cannot run on every push: instrumenting every branch takes minutes where the suite
+    # takes seconds.  It runs where it pays for itself — on a pull request, on a commit
+    # that lands on main, and on demand — so a failure always names the change that caused
+    # it.  Line coverage above says a line ran; this says the decision on it went both ways.
+    name: Branch coverage (GD and ImageMagick)
+    if: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: php-image
+
+    steps:
+      - name: Checkout library
+        uses: actions/checkout@v5
+        with:
+          path: php-image
+
+      - name: Setup PHP, with composer and extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: ctype, dom, gd, iconv, imagick, intl, json, mbstring, pcre, spl
+          # Branch data comes from xdebug; pcov records lines only.
+          coverage: xdebug
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --prefer-dist
+
+      # phpunit-branch.xml keeps src/Stream and src/Util out of the path-coverage scope;
+      # the file's own comment records the measurement behind that, and both stay in the
+      # line-coverage gate above.
+      - name: Measure branch coverage
+        env:
+          XDEBUG_MODE: coverage
+        run: php -d memory_limit=2G vendor/bin/phpunit -c phpunit-branch.xml --testsuite unit --path-coverage --coverage-php build/logs/coverage.php
+
+      - name: Enforce branch coverage
+        run: php -d memory_limit=1G tests/test_tools/branch-gate.php build/logs/coverage.php

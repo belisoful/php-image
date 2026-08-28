@@ -1,0 +1,37 @@
+parameters:
+    phpVersion: 80300 # PHP 8.3
+    level: 4
+    bootstrapFiles:
+        - tests/test_tools/phpstan-bootstrap.php
+    paths:
+        - src
+
+    # Deliberate runtime guards the analyser cannot see through.  Each is a real
+    # defence that a test exercises or that protects against input the type system
+    # cannot describe; unmatched entries are reported, so they cannot go stale.
+    ignoreErrors:
+        # setChunks() promises array<int, ImageChunk> to its callers but still checks
+        # at runtime, because a caller that ignores the docblock must get the documented
+        # png_chunk_invalid exception rather than a fatal later on.  Covered by a test.
+        -
+            identifier: instanceof.alwaysTrue
+            path: src/PNGImage.php
+            count: 1
+        # pack()/unpack() call getSize($type) first, which throws for a non-TIFF type,
+        # so the match only ever sees the twelve real data types.
+        -
+            identifier: match.unhandled
+            path: src/TIFF/TIFFDataType.php
+            count: 2
+        # The closing arm of the coercion chain names the type it handles rather than
+        # relying on elimination, so adding a type cannot silently fall into it.
+        -
+            identifier: identical.alwaysTrue
+            path: src/Meta/IPTC.php
+            count: 1
+        # Imagick::getQuantumDepth() is documented to carry the key, but the fallback
+        # keeps a build that omits it reporting 8-bit rather than fatalling.
+        -
+            identifier: nullCoalesce.offset
+            path: src/ImageGraphicsImagick.php
+            count: 1
