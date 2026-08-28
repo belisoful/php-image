@@ -368,7 +368,7 @@ class EXIF implements PrivacyScrubbableInterface
 	 * @param int $length The total length the complement is taken over.
 	 * @return array<int, array{0: int, 1: int}> The free `[offset, length]` ranges.
 	 */
-	protected static function complementSpaces(array $spaces, int $length): array
+	public static function complementSpaces(array $spaces, int $length): array
 	{
 		usort($spaces, static fn (array $a, array $b): int => $a[0] <=> $b[0]);
 		$free = [];

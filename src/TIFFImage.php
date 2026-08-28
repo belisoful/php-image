@@ -331,21 +331,9 @@ class TIFFImage extends ImageFile
 	 */
 	public function getFreeSpaces(): array
 	{
-		$spaces = $this->getReservedSpaces();
-		$length = strlen($this->toBinary());
-		usort($spaces, static fn (array $a, array $b): int => $a[0] <=> $b[0]);
-		$free = [];
-		$cursor = 0;
-		foreach ($spaces as [$offset, $size]) {
-			if ($offset > $cursor) {
-				$free[] = [$cursor, min($offset, $length) - $cursor];
-			}
-			$cursor = max($cursor, $offset + $size);
-		}
-		if ($cursor < $length) {
-			$free[] = [$cursor, $length - $cursor];
-		}
-		return $free;
+		// The same complement EXIF computes over its own composed bytes; a TIFF's reserved
+		// ranges and length come from the EXIF it wraps, so it reuses that one implementation.
+		return EXIF::complementSpaces($this->getReservedSpaces(), strlen($this->toBinary()));
 	}
 
 	/**
