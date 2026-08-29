@@ -12,6 +12,7 @@ namespace Belisoful\Image\Meta;
 
 use Belisoful\Image\ImageGraphics;
 use Belisoful\Image\ImageGraphicsMode;
+use Belisoful\Image\Stream\StreamIO;
 use Psr\Http\Message\StreamInterface;
 
 /**
@@ -74,12 +75,14 @@ class JFXX
 
 	/**
 	 * Parses a JFXX APP0 payload into a populated instance.
-	 * @param StreamInterface|string $data The JFXX binary data.
+	 * @param mixed $data The JFXX binary data as a string, a {@see StreamInterface}, or a
+	 *   PHP stream resource (read from its current position without taking ownership).
+	 * @throws \InvalidArgumentException When the data is none of those.
 	 * @return false|JFXX The parsed JFXX, or false when the data is not JFXX.
 	 */
-	public static function parse(string|StreamInterface $data): false|JFXX
+	public static function parse(mixed $data): false|JFXX
 	{
-		$bytes = $data instanceof StreamInterface ? $data->getContents() : $data;
+		$bytes = StreamIO::readAll($data);
 		if (strlen($bytes) < 6 || !self::isJFXX($bytes)) {
 			return false;
 		}

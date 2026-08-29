@@ -12,6 +12,7 @@ namespace Belisoful\Image\Meta;
 
 use Belisoful\Image\ImageGraphics;
 use Belisoful\Image\ImageGraphicsMode;
+use Belisoful\Image\Stream\StreamIO;
 use Psr\Http\Message\StreamInterface;
 
 /**
@@ -91,12 +92,14 @@ class JFIF
 
 	/**
 	 * Parses a JFIF APP0 payload into a populated instance.
-	 * @param StreamInterface|string $data The JFIF binary data.
+	 * @param mixed $data The JFIF binary data as a string, a {@see StreamInterface}, or a
+	 *   PHP stream resource (read from its current position without taking ownership).
+	 * @throws \InvalidArgumentException When the data is none of those.
 	 * @return false|JFIF The parsed JFIF, or false when the data is not JFIF.
 	 */
-	public static function parse(string|StreamInterface $data): false|JFIF
+	public static function parse(mixed $data): false|JFIF
 	{
-		$bytes = $data instanceof StreamInterface ? $data->getContents() : $data;
+		$bytes = StreamIO::readAll($data);
 		if (strlen($bytes) < self::HEADER_SIZE || !self::isJFIF($bytes)) {
 			return false;
 		}

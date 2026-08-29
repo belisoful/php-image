@@ -123,6 +123,11 @@ class JFIFJFXXTest extends PHPUnit\Framework\TestCase
 		self::assertSame([4, 3], [$parsed->getXThumbnail(), $parsed->getYThumbnail()]);
 		self::assertSame(bin2hex($binary), bin2hex($parsed->toBinary()));
 
+		// A raw PHP stream resource parses identically.
+		$fromResource = JFIF::parse(TestIOHelper::dataResource($binary));
+		self::assertInstanceOf(JFIF::class, $fromResource);
+		self::assertSame(bin2hex($binary), bin2hex($fromResource->toBinary()));
+
 		// A stream that is not JFIF is refused the same way a string is.
 		self::assertFalse(JFIF::parse(new TestPsr7Stream("JFIF\x00\x01")));
 
@@ -248,6 +253,11 @@ class JFIFJFXXTest extends PHPUnit\Framework\TestCase
 		self::assertSame(JFXX::COLOR_THUMB, $parsed->getFormat());
 		self::assertSame([4, 3], [$parsed->getXThumbnail(), $parsed->getYThumbnail()]);
 		self::assertSame(bin2hex($binary), bin2hex((string) $parsed->toBinary()));
+
+		// A raw PHP stream resource parses identically.
+		$fromResource = JFXX::parse(TestIOHelper::dataResource($binary));
+		self::assertInstanceOf(JFXX::class, $fromResource);
+		self::assertSame(bin2hex($binary), bin2hex((string) $fromResource->toBinary()));
 
 		// A stream too short to be JFXX is refused the same way a string is.
 		self::assertFalse(JFXX::parse(new TestPsr7Stream('JFXX')));
