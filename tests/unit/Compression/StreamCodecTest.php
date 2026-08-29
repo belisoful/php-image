@@ -180,11 +180,15 @@ class StreamCodecTest extends PHPUnit\Framework\TestCase
 		self::assertSame('ABCDEF', $this->drive(LZWCompressor::decoder(), $encoded, 64));
 	}
 
-	public function testPackBitsDecoderDropsATruncatedTail()
+	public function testPackBitsDecoderRecoversATruncatedLiteralTail()
 	{
-		// A literal header wanting six bytes with only two present is an incomplete packet: it
-		// is carried, never completed, and discarded at finish(), while the packet before decodes.
-		self::assertSame('XYZ', $this->drive(PackBitsCompressor::decoder(), chr(2) . 'XYZ' . chr(5) . 'AB', 64));
+		// A literal header wanting six bytes with only two present is an incomplete packet: the
+		// two bytes are unambiguously literal, so they are recovered at finish() after the packet
+		// before it decodes — no recoverable byte of a truncated stream is lost.
+		self::assertSame('XYZAB', $this->drive(PackBitsCompressor::decoder(), chr(2) . 'XYZ' . chr(5) . 'AB', 64));
+		// A truncated repeat packet has no run byte to expand, so it yields nothing beyond the
+		// complete packet before it.
+		self::assertSame('XYZ', $this->drive(PackBitsCompressor::decoder(), chr(2) . 'XYZ' . chr(254), 64));
 	}
 
 	public function testPackBitsDecoderSkipsNoOpPackets()

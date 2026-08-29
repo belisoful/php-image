@@ -64,8 +64,9 @@ class PackBitsCompressor implements CompressorInterface
 	}
 
 	/**
-	 * Decompresses a PackBits byte string.  A truncated final packet decodes to the bytes
-	 * of its complete packets; RLE carries no end marker, so tolerance matches the format.
+	 * Decompresses a PackBits byte string.  A truncated final literal packet still yields
+	 * the literal bytes it carries; a truncated repeat packet (no run byte) yields nothing.
+	 * RLE carries no end marker, so this tolerance matches the format.
 	 * @param string $data The PackBits-encoded bytes.
 	 * @return string The decoded bytes.
 	 */

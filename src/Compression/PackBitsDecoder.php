@@ -16,8 +16,11 @@ namespace Belisoful\Image\Compression;
  * The incremental decoder half of the PackBits run-length codec (see
  * {@see PackBitsCompressor} for the format).  It is a {@see StreamCodec}: feed encoded
  * bytes with {@see add()}, which decodes every whole packet and carries any partial tail.
- * A truncated final packet held at {@see finish()} is discarded — RLE carries no end
- * marker, so the tolerance matches the format and {@see PackBitsCompressor::decompress()}.
+ * A truncated final packet held at {@see finish()} recovers what it can — a partial literal
+ * packet's bytes are unambiguously literal, so they are emitted; a partial repeat packet
+ * has no run byte to expand, so it yields nothing.  RLE carries no end marker, so this
+ * tolerance matches the format and {@see PackBitsCompressor::decompress()}, losing no
+ * recoverable byte of a truncated stream.
  *
  * @author Brad Anderson <belisoful@icloud.com>
  */
@@ -63,11 +66,19 @@ class PackBitsDecoder implements StreamCodec
 	}
 
 	/**
-	 * A partial packet still buffered at close is a truncated stream and is discarded.
-	 * @return string Always ''.
+	 * Recovers a partial packet still buffered at close: a truncated literal packet's data
+	 * bytes are literal and are emitted; a truncated repeat packet has no run byte to
+	 * expand and yields nothing.
+	 * @return string The recovered literal bytes, or ''.
 	 */
 	public function finish(): string
 	{
-		return '';
+		if ($this->_pending === '') {
+			return '';
+		}
+		$n = ord($this->_pending[0]);
+		$literal = $n < 128 ? substr($this->_pending, 1) : '';   // a partial repeat (>=129) has no run byte to expand
+		$this->_pending = '';
+		return $literal;
 	}
 }
