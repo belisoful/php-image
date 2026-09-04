@@ -31,6 +31,20 @@ class EXIFTest extends PHPUnit\Framework\TestCase
 		return ob_get_clean();
 	}
 
+	public function testStreamToBuffersWhenAnExifSignatureIsPresent()
+	{
+		// A signature-bearing EXIF (an APP1 payload, not a bare TIFF document) must lead with
+		// its signature, so streamTo composes in full and writes the same bytes toBinary would.
+		$exif = $this->sampleExif();
+		$target = TestIOHelper::memoryResource();
+		$written = $exif->streamTo($target);
+		rewind($target);
+		$out = (string) stream_get_contents($target);
+		fclose($target);
+		self::assertSame(strlen($out), $written);
+		self::assertSame(bin2hex((string) $exif->toBinary()), bin2hex($out));
+	}
+
 	public function testSegmentRoundTrip()
 	{
 		$payload = $this->sampleExif()->toBinary();

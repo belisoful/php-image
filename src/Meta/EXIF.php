@@ -18,6 +18,7 @@ use Belisoful\Image\TIFF\TIFFDocument;
 use Belisoful\Image\TIFF\TIFFIfd;
 use Belisoful\Image\TIFF\TIFFTag;
 use Belisoful\Image\Stream\BinaryReader;
+use Belisoful\Image\Stream\StreamIO;
 
 /**
  * EXIF class.
@@ -193,13 +194,14 @@ class EXIF implements PrivacyScrubbableInterface
 	 * surrounding file absolutely (e.g. Canon) decodes only its inline values; the
 	 * self-contained makernote forms decode fully.
 	 * @param mixed $stream The seekable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @param bool $deferStrips Whether to capture strip/tile data as deferred ranges (for {@see streamTo()}). Default false.
 	 * @return static The scanned EXIF.
 	 */
-	public static function scanStream(mixed $stream): static
+	public static function scanStream(mixed $stream, bool $deferStrips = false): static
 	{
 		$io = new BinaryReader($stream);
 		$base = $io->tell();
-		$exif = new static(TIFFDocument::scanStream($stream, static::subIfdTags()));
+		$exif = new static(TIFFDocument::scanStream($stream, static::subIfdTags(), deferStrips: $deferStrips));
 		$exif->_signature = '';
 		$exif->pinMakernote();
 
@@ -1155,6 +1157,24 @@ class EXIF implements PrivacyScrubbableInterface
 			$bytes = $this->_tiff->toBinary();
 		}
 		return $this->_signature . $bytes;
+	}
+
+	/**
+	 * Writes the EXIF to a target, streaming the TIFF structure (its deferred strip/tile
+	 * data copied straight from the source) where it can — the bare-TIFF form of a scanned
+	 * TIFF file.  The signature-prefixed segment form and the re-linked IFD1 thumbnail are
+	 * metadata-sized, so those compose in full.
+	 * @param mixed $target A writable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \InvalidArgumentException When the target is neither.
+	 * @throws \RuntimeException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		if ($this->_signature !== '' || $this->_thumbnail !== null) {
+			return StreamIO::writeAll($target, $this->toBinary());
+		}
+		return $this->_tiff->streamTo($target);
 	}
 
 	/**

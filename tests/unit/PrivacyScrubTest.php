@@ -357,15 +357,18 @@ class PrivacyScrubTest extends PHPUnit\Framework\TestCase
 	private function assertContainerScrubReachesEveryCarrier(string $class, string $bytes, callable $extras, callable $extrasGone): void
 	{
 		$file = $class::fromString($bytes);
-		if (method_exists($file, 'setEXIF')) {
+		try {
 			$file->setEXIF($this->loadedExif());
-		} elseif ($file instanceof TIFFImage) {
-			$exif = $file->getEXIF();
-			$exif->setValueByName('Artist', 'Jane Doe');
-			$exif->setValueByName('Make', 'TestCam');
-			$exif->setValueByName('FNumber', 2.8);
-			$exif->setLatitude(34.05);
-			$exif->setLongitude(-118.24);
+		} catch (\RuntimeException $e) {
+			// No writable EXIF carrier: TIFF edits its live IFD in place; GIF has no EXIF at all.
+			if ($file instanceof TIFFImage) {
+				$exif = $file->getEXIF();
+				$exif->setValueByName('Artist', 'Jane Doe');
+				$exif->setValueByName('Make', 'TestCam');
+				$exif->setValueByName('FNumber', 2.8);
+				$exif->setLatitude(34.05);
+				$exif->setLongitude(-118.24);
+			}
 		}
 		$file->setXMP($this->loadedContainerXmp());
 		$hasIptc = false;
@@ -382,7 +385,7 @@ class PrivacyScrubTest extends PHPUnit\Framework\TestCase
 		self::assertGreaterThan(0, $removed, "$class removed something");
 		$round = $class::fromString($file->toBinary());
 
-		if (method_exists($round, 'getEXIF') && $round->getEXIF() !== null) {
+		if ($round->getEXIF() !== null) {   // every container exposes getEXIF; only some carry one
 			self::assertNull($round->getEXIF()->getValueByName('Artist'), "$class EXIF Artist gone");
 			self::assertNull($round->getEXIF()->getValueByName('Make'), "$class EXIF Make gone");
 			self::assertNull($round->getEXIF()->getLatitude(), "$class EXIF GPS gone");

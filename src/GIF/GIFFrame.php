@@ -12,6 +12,7 @@ namespace Belisoful\Image\GIF;
 
 use Belisoful\Image\Compression\GIFLZWCompressor;
 use Belisoful\Image\ImageGraphics;
+use Belisoful\Image\Stream\SourceRange;
 
 /**
  * GIFFrame class.
@@ -77,6 +78,9 @@ class GIFFrame
 
 	/** @var array<int, string> The LZW data sub-blocks, in the framing they were read with. */
 	private array $_dataSubBlocks = [];
+
+	/** @var ?SourceRange The deferred raw image-data run (framed sub-blocks + terminator), or null when loaded. */
+	private ?SourceRange $_dataRange = null;
 
 	/** @var bool Whether a Graphic Control Extension precedes the frame. */
 	private bool $_hasGraphicControl = false;
@@ -347,21 +351,69 @@ class GIFFrame
 	}
 
 	/**
-	 * Returns the LZW data sub-blocks in their original framing.
+	 * Returns the LZW data sub-blocks in their original framing, materializing a deferred
+	 * frame's data from its source on demand.
 	 * @return array<int, string> The sub-blocks.
 	 */
 	public function getDataSubBlocks(): array
 	{
+		if ($this->_dataRange !== null) {
+			return self::splitSubBlocks($this->_dataRange->read());
+		}
 		return $this->_dataSubBlocks;
 	}
 
 	/**
-	 * Replaces the LZW data sub-blocks, keeping the given framing.
+	 * Replaces the LZW data sub-blocks, keeping the given framing and loading the frame (a
+	 * deferred range is dropped, since the data is now held directly).
 	 * @param array<int, string> $value The sub-blocks, each at most 255 bytes.
 	 */
 	public function setDataSubBlocks(array $value): void
 	{
 		$this->_dataSubBlocks = array_values($value);
+		$this->_dataRange = null;
+	}
+
+	/**
+	 * Points the frame's image data at a deferred range in a still-open source, for a
+	 * streaming parse that reads the framing but not the compressed bytes.
+	 * @param SourceRange $range The raw image-data run (framed sub-blocks + terminator).
+	 */
+	public function setDeferredData(SourceRange $range): void
+	{
+		$this->_dataRange = $range;
+		$this->_dataSubBlocks = [];
+	}
+
+	/**
+	 * Returns the deferred image-data range, or null when the data is loaded.
+	 * @return ?SourceRange The deferred range.
+	 */
+	public function getDeferredData(): ?SourceRange
+	{
+		return $this->_dataRange;
+	}
+
+	/**
+	 * Splits a raw image-data run (length-prefixed sub-blocks ended by a zero block) into
+	 * its sub-block chunks.
+	 * @param string $run The raw run.
+	 * @return array<int, string> The sub-block chunks.
+	 */
+	private static function splitSubBlocks(string $run): array
+	{
+		$chunks = [];
+		$i = 0;
+		$len = strlen($run);
+		while ($i < $len) {
+			$size = ord($run[$i]);
+			if ($size === 0) {
+				break;
+			}
+			$chunks[] = substr($run, $i + 1, $size);
+			$i += 1 + $size;
+		}
+		return $chunks;
 	}
 
 	/**
@@ -380,6 +432,7 @@ class GIFFrame
 	public function setLzwData(string $value): void
 	{
 		$this->_dataSubBlocks = $value === '' ? [] : str_split($value, self::MaxSubBlock);
+		$this->_dataRange = null;
 	}
 
 	/**
@@ -490,6 +543,17 @@ class GIFFrame
 	 */
 	public function toBinary(): string
 	{
+		return $this->frameHeaderBytes() . $this->dataBytes();
+	}
+
+	/**
+	 * Returns the frame's bytes up to (and including) the LZW minimum-code-size: the
+	 * graphic-control extension, the image descriptor, the local colour table, and the
+	 * minimum-code-size byte — everything before the data sub-blocks.
+	 * @return string The frame header bytes.
+	 */
+	public function frameHeaderBytes(): string
+	{
 		$out = '';
 		if ($this->_hasGraphicControl) {
 			$packed = (($this->_graphicControlReserved & 0x07) << 5)
@@ -508,7 +572,20 @@ class GIFFrame
 		if ($this->_localColorTable !== null) {
 			$out .= $this->_localColorTable;
 		}
-		$out .= chr($this->_minCodeSize);
+		return $out . chr($this->_minCodeSize);
+	}
+
+	/**
+	 * Returns the frame's image-data run (framed sub-blocks ended by a zero block),
+	 * materializing a deferred frame's data from its source.
+	 * @return string The image-data run.
+	 */
+	private function dataBytes(): string
+	{
+		if ($this->_dataRange !== null) {
+			return $this->_dataRange->read();
+		}
+		$out = '';
 		foreach ($this->_dataSubBlocks as $block) {
 			foreach (str_split($block, self::MaxSubBlock) as $piece) {
 				$out .= chr(strlen($piece)) . $piece;

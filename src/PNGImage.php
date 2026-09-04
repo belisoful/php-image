@@ -13,6 +13,9 @@ namespace Belisoful\Image;
 use Belisoful\Image\Meta\IPTC;
 use Belisoful\Image\PNG\APNGFrame;
 use Belisoful\Image\PNG\PNGChunkType;
+use Belisoful\Image\Stream\BinaryReader;
+use Belisoful\Image\Stream\SourceRange;
+use Belisoful\Image\Stream\StreamIO;
 
 /**
  * PNGImage class.
@@ -106,6 +109,16 @@ class PNGImage extends ImageFile
 	public function getFormat(): string
 	{
 		return 'PNG';
+	}
+
+	/**
+	 * Indicates whether the bytes begin with the PNG signature.
+	 * @param string $data The candidate image bytes.
+	 * @return bool Whether the data is a PNG.
+	 */
+	public static function isPNG(string $data): bool
+	{
+		return strncmp($data, self::Signature, 8) === 0;
 	}
 
 	/**
@@ -931,6 +944,95 @@ class PNGImage extends ImageFile
 				break;
 			}
 		}
+	}
+
+	/**
+	 * Lazily reads a PNG from a seekable stream: the chunk framing and the small metadata
+	 * chunks are read, but each `IDAT` pixel chunk is kept as a {@see SourceRange} into the
+	 * still-open source rather than loaded, so a PNG far larger than memory opens for a
+	 * metadata edit.  Pair it with {@see streamTo()}, which copies the deferred pixel
+	 * chunks straight through; the source must stay open and seekable until then.
+	 * @param mixed $stream The seekable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \RuntimeException When the stream is not seekable.
+	 * @throws \UnexpectedValueException When the bytes lack the PNG signature.
+	 * @return static The lazily parsed PNG.
+	 */
+	public static function fromStreamLazy(mixed $stream): static
+	{
+		StreamIO::rewind($stream);
+		$image = new static();
+		$image->parseStream($stream);
+		return $image;
+	}
+
+	/**
+	 * Walks the chunk framing of a seekable stream, deferring each `IDAT` payload.
+	 * @param mixed $stream The seekable stream or resource, positioned at the PNG start.
+	 * @throws \RuntimeException When the stream is not seekable.
+	 * @throws \UnexpectedValueException When the bytes lack the PNG signature.
+	 */
+	protected function parseStream(mixed $stream): void
+	{
+		$binary = new BinaryReader($stream);
+		if (!$binary->isSeekable()) {
+			throw new \RuntimeException('Lazily reading a PNG requires a seekable stream.');
+		}
+		if ($binary->readBytes(8) !== self::Signature) {
+			throw new \UnexpectedValueException(sprintf('PNG data is invalid: %s.', 'missing PNG signature'));
+		}
+		$this->_chunks = [];
+		while (true) {
+			$start = $binary->tell();
+			try {
+				$header = $binary->readBytes(8);   // 4-byte length + 4-byte type
+			} catch (\RuntimeException $e) {
+				break;   // the stream ended (a well-formed PNG has already broken at IEND)
+			}
+			$size = (int) unpack('N', substr($header, 0, 4))[1];
+			$type = substr($header, 4, 4);
+			if ($type === PNGChunkType::ImageData) {
+				// Defer the whole on-disk chunk (length + type + payload + CRC) and skip its bytes.
+				$this->_chunks[] = ImageChunk::deferred($type, $size, $start + 8, new SourceRange($stream, $start, 8 + $size + 4));
+				$binary->seek($start + 8 + $size + 4);
+				continue;
+			}
+			$payload = $binary->readBytes($size);
+			$binary->seek($binary->tell() + 4);   // skip the CRC
+			$this->_chunks[] = new ImageChunk($type, $size, $start + 8, $payload);
+			if ($type === PNGChunkType::Header && strlen($payload) >= 8) {
+				$this->setWidthDirect((int) unpack('N', substr($payload, 0, 4))[1]);
+				$this->setHeightDirect((int) unpack('N', substr($payload, 4, 4))[1]);
+			}
+			if ($type === PNGChunkType::End) {
+				break;
+			}
+		}
+	}
+
+	/**
+	 * Writes the PNG to a target, copying each deferred `IDAT` chunk straight from the
+	 * source in bounded memory and rebuilding every other (loaded or edited) chunk.  A PNG
+	 * opened with {@see fromStreamLazy()} is rewritten around a metadata edit without ever
+	 * holding its pixels; a fully loaded PNG streams the same bytes {@see toBinary()} would.
+	 * @param mixed $target A writable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \InvalidArgumentException When the target is neither.
+	 * @throws \RuntimeException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		$written = StreamIO::writeAll($target, self::Signature);
+		foreach ($this->getChunks() as $chunk) {
+			$range = $chunk->getDeferredRange();
+			if ($range !== null) {
+				$written += $range->writeTo($target);
+				continue;
+			}
+			$type = $chunk->getType();
+			$data = $chunk->getData();
+			$written += StreamIO::writeAll($target, pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data)));
+		}
+		return $written;
 	}
 
 	/**

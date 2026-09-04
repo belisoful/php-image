@@ -11,6 +11,8 @@
 namespace Belisoful\Image;
 
 use Belisoful\Image\Meta\IPTC;
+use Belisoful\Image\Stream\SourceRange;
+use Belisoful\Image\Stream\StreamIO;
 
 /**
  * WebPImage class.
@@ -69,6 +71,16 @@ class WebPImage extends ImageFile
 	public function getFormat(): string
 	{
 		return 'WebP';
+	}
+
+	/**
+	 * Indicates whether the bytes are a RIFF container of the `WEBP` form type.
+	 * @param string $data The candidate image bytes.
+	 * @return bool Whether the data is a WebP.
+	 */
+	public static function isWebP(string $data): bool
+	{
+		return strlen($data) >= 12 && strncmp($data, 'RIFF', 4) === 0 && strncmp(substr($data, 8, 4), 'WEBP', 4) === 0;
 	}
 
 	/**
@@ -318,6 +330,64 @@ class WebPImage extends ImageFile
 	protected function compose(): string
 	{
 		return $this->_riff === null ? $this->getBytesDirect() : $this->_riff->toBinary();
+	}
+
+	/**
+	 * Lazily reads a WebP from a seekable stream: the small metadata chunks are read, but
+	 * each large pixel chunk (`VP8 `, `VP8L`, `ANMF`, `ALPH`) is kept as a deferred range
+	 * into the still-open source, so a WebP far larger than memory opens for a metadata
+	 * edit.  Pair it with {@see streamTo()}; the source must stay open and seekable until
+	 * then.  The canvas size is read from the small header of the pixel chunk without
+	 * loading it.
+	 * @param mixed $stream The seekable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \RuntimeException When the stream is not seekable.
+	 * @throws \UnexpectedValueException When the RIFF form type is not WEBP.
+	 * @return static The lazily parsed WebP.
+	 */
+	public static function fromStreamLazy(mixed $stream): static
+	{
+		StreamIO::rewind($stream);
+		$riff = RIFFContainer::fromStreamLazy($stream, [RIFFChunkType::Vp8, RIFFChunkType::Vp8Lossless, RIFFChunkType::AnimationFrame, RIFFChunkType::Alpha]);
+		if ($riff->getFormType() !== 'WEBP') {
+			throw new \UnexpectedValueException(sprintf('WebP data is invalid: %s.', 'RIFF form type is not WEBP'));
+		}
+		$image = new static();
+		$image->_riff = $riff;
+		if (($vp8x = $riff->getChunk(RIFFChunkType::Vp8Extended)) !== null) {
+			$image->readVp8x($vp8x->getData());   // VP8X is small and loaded
+		} elseif (($vp8l = $riff->getChunk(RIFFChunkType::Vp8Lossless)) !== null) {
+			$image->readVp8l($image->peekDeferred($vp8l, $stream));
+		} elseif (($vp8 = $riff->getChunk(RIFFChunkType::Vp8)) !== null) {
+			$image->readVp8($image->peekDeferred($vp8, $stream));
+		}
+		return $image;
+	}
+
+	/**
+	 * Reads the leading dimension-header bytes of a deferred pixel chunk from its source,
+	 * without materializing the payload.
+	 * @param ImageChunk $chunk The deferred dimension-bearing chunk.
+	 * @param mixed $stream The still-open source.
+	 * @return string The first bytes of the payload (up to 10).
+	 */
+	private function peekDeferred(ImageChunk $chunk, mixed $stream): string
+	{
+		return (new SourceRange($stream, $chunk->getOffset(), min(10, $chunk->getSize())))->read();
+	}
+
+	/**
+	 * Writes the WebP to a target, copying each deferred pixel chunk straight from the
+	 * source in bounded memory and rebuilding the metadata chunks (with their `VP8X`
+	 * feature flags already in step from the setters), so a WebP opened with
+	 * {@see fromStreamLazy()} is rewritten around a metadata edit without holding its pixels.
+	 * @param mixed $target A writable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \InvalidArgumentException When the target is neither.
+	 * @throws \RuntimeException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		return $this->_riff === null ? StreamIO::writeAll($target, $this->getBytesDirect()) : $this->_riff->streamTo($target);
 	}
 
 	/**

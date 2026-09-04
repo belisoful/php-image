@@ -104,4 +104,82 @@ class StreamIOTest extends PHPUnit\Framework\TestCase
 		self::assertSame('', stream_get_contents($empty));
 		fclose($empty);
 	}
+
+	public function testCopyRangeTransfersAByteRangeBetweenResources()
+	{
+		$source = TestIOHelper::dataResource('HEADER' . 'PAYLOAD' . 'TRAILER');
+		$target = TestIOHelper::memoryResource();
+		self::assertSame(7, StreamIO::copyRange($source, 6, 7, $target));
+		rewind($target);
+		self::assertSame('PAYLOAD', stream_get_contents($target));
+		fclose($source);
+		fclose($target);
+	}
+
+	public function testCopyRangeCrossesChunkBoundaries()
+	{
+		$payload = str_repeat('abcdefghij', 500);   // 5000 bytes
+		$source = TestIOHelper::dataResource('..' . $payload . '..');
+		$target = new TestPsr7Stream();
+		// A tiny chunk size forces many transfers; every byte must still arrive in order.
+		self::assertSame(5000, StreamIO::copyRange($source, 2, 5000, $target, 7));
+		$target->rewind();
+		self::assertSame($payload, $target->getContents());
+		fclose($source);
+	}
+
+	public function testCopyRangeReadsFromAPsr7StreamSource()
+	{
+		$source = new TestPsr7Stream('0123456789');
+		$target = TestIOHelper::memoryResource();
+		self::assertSame(4, StreamIO::copyRange($source, 3, 4, $target));
+		rewind($target);
+		self::assertSame('3456', stream_get_contents($target));
+		fclose($target);
+	}
+
+	public function testCopyRangeRejectsANonSeekableStreamSource()
+	{
+		self::expectException(\InvalidArgumentException::class);
+		StreamIO::copyRange(new TestNonSeekableStream('abcdef'), 0, 3, TestIOHelper::memoryResource());
+	}
+
+	public function testCopyRangeRejectsANegativeLength()
+	{
+		self::expectException(\InvalidArgumentException::class);
+		StreamIO::copyRange(TestIOHelper::dataResource('abc'), 0, -1, TestIOHelper::memoryResource());
+	}
+
+	public function testCopyRangeRejectsANonPositiveChunkSize()
+	{
+		self::expectException(\InvalidArgumentException::class);
+		StreamIO::copyRange(TestIOHelper::dataResource('abc'), 0, 3, TestIOHelper::memoryResource(), 0);
+	}
+
+	public function testCopyRangeRejectsANonStreamSource()
+	{
+		self::expectException(\InvalidArgumentException::class);
+		StreamIO::copyRange('a plain string', 0, 3, TestIOHelper::memoryResource());
+	}
+
+	public function testCopyRangeThrowsWhenTheSourceEndsBeforeTheRange()
+	{
+		self::expectException(\RuntimeException::class);
+		StreamIO::copyRange(TestIOHelper::dataResource('short'), 0, 999, TestIOHelper::memoryResource());
+	}
+
+	public function testCopyRangeThrowsWhenAResourceCannotSeek()
+	{
+		// A pipe is a readable but non-seekable resource, so fseek fails.
+		$pipe = popen('printf abcdef', 'r');
+		self::assertIsResource($pipe);
+		try {
+			StreamIO::copyRange($pipe, 2, 2, TestIOHelper::memoryResource());
+			self::fail('A non-seekable resource should be rejected.');
+		} catch (\RuntimeException $e) {
+			self::assertStringContainsString('cannot seek', $e->getMessage());
+		} finally {
+			pclose($pipe);
+		}
+	}
 }

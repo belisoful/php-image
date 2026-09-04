@@ -17,6 +17,9 @@ use Belisoful\Image\Meta\JFXX;
 use Belisoful\Image\Meta\JUMBF\JUMBFBox;
 use Belisoful\Image\Meta\PictureInfo;
 use Belisoful\Image\Meta\XMP;
+use Belisoful\Image\Stream\BinaryReader;
+use Belisoful\Image\Stream\SourceRange;
+use Belisoful\Image\Stream\StreamIO;
 
 /**
  * JPEGImage class.
@@ -187,6 +190,9 @@ class JPEGImage extends ImageFile
 
 	/** @var string The preserved entropy-coded scan (from the SOS marker to the end). */
 	private string $_scan = '';
+
+	/** @var ?SourceRange The deferred scan range into a still-open source, or null when loaded. */
+	private ?SourceRange $_scanRange = null;
 
 	/** @var ?JFIF The parsed JFIF (APP0), or null when absent. */
 	private ?JFIF $_jfif = null;
@@ -581,16 +587,21 @@ class JPEGImage extends ImageFile
 	 */
 	protected function getScanDirect(): string
 	{
+		if ($this->_scanRange !== null) {
+			return $this->_scanRange->read();   // materialize a lazily deferred scan
+		}
 		return $this->_scan;
 	}
 
 	/**
-	 * Stores the raw scan bytes (protected raw accessor).
+	 * Stores the raw scan bytes (protected raw accessor), loading it (a deferred range is
+	 * dropped, since the scan is now held directly).
 	 * @param string $scan The scan, beginning with the SOS marker.
 	 */
 	protected function setScanDirect(string $scan): void
 	{
 		$this->_scan = $scan;
+		$this->_scanRange = null;
 	}
 
 	/**
@@ -707,6 +718,17 @@ class JPEGImage extends ImageFile
 			$this->ingestSegment($marker, $payload, $chunks);
 			$i += 2 + $segLen;
 		}
+		$this->finalizeParsedChunks($chunks);
+	}
+
+	/**
+	 * Reassembles the multi-segment carriers gathered during a parse into their objects:
+	 * the (ordered) ICC profile, the Photoshop IRB and its IPTC, the JUMBF boxes, and the
+	 * extended XMP.
+	 * @param array{icc: array<int, string>, irb: string[], jumbf: string[], xmpext: string[]} $chunks
+	 */
+	protected function finalizeParsedChunks(array $chunks): void
+	{
 		if ($chunks['icc'] !== []) {
 			ksort($chunks['icc']);
 			$this->setICCProfileDirect(implode('', $chunks['icc']));
@@ -724,6 +746,105 @@ class JPEGImage extends ImageFile
 		if ($chunks['xmpext'] !== []) {
 			$this->mergeExtendedXmp($chunks['xmpext']);
 		}
+	}
+
+	/**
+	 * Lazily reads a JPEG from a seekable stream: every segment before the scan is read,
+	 * but the entropy-coded scan (from the `SOS` marker to the end) is kept as a deferred
+	 * range into the still-open source rather than loaded, so a JPEG far larger than memory
+	 * opens for a metadata edit.  Pair it with {@see streamTo()}; the source must stay open
+	 * and seekable until then.  Dimensions come from the frame header; a rare `DNL`-in-scan
+	 * height is not resolved without reading the scan.
+	 * @param mixed $stream The seekable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \RuntimeException When the stream is not seekable.
+	 * @throws \UnexpectedValueException When the bytes lack the SOI marker.
+	 * @return static The lazily parsed JPEG.
+	 */
+	public static function fromStreamLazy(mixed $stream): static
+	{
+		StreamIO::rewind($stream);
+		$image = new static();
+		$image->parseStream($stream);
+		return $image;
+	}
+
+	/**
+	 * Walks the segments of a seekable stream, ingesting each and deferring the scan.
+	 * @param mixed $stream The seekable stream or resource, positioned at the JPEG start.
+	 * @throws \RuntimeException When the stream is not seekable.
+	 * @throws \UnexpectedValueException When the bytes lack the SOI marker.
+	 */
+	protected function parseStream(mixed $stream): void
+	{
+		$binary = new BinaryReader($stream);
+		if (!$binary->isSeekable()) {
+			throw new \RuntimeException('Lazily reading a JPEG requires a seekable stream.');
+		}
+		if (!self::isJPEG($binary->readBytes(2))) {
+			throw new \UnexpectedValueException(sprintf('JPEG data is invalid: %s.', 'missing SOI marker'));
+		}
+		$chunks = ['icc' => [], 'irb' => [], 'jumbf' => [], 'xmpext' => []];
+		while (($marker = $this->nextMarker($binary)) !== null) {
+			[$m, $markerOffset] = $marker;
+			if ($m === self::SOS || $m === self::EOI) {   // the rest of the file is the scan
+				$binary->seek(0, SEEK_END);
+				$this->_scan = '';
+				$this->_scanRange = new SourceRange($stream, $markerOffset, $binary->tell() - $markerOffset);
+				break;
+			}
+			if (!self::markerHasLength($m)) {
+				continue;
+			}
+			$segLen = (int) unpack('n', $binary->readBytes(2))[1];
+			$payload = $binary->readBytes($segLen - 2);
+			if (self::isStartOfFrameMarker($m) || $m === self::DHP) {
+				$this->readStartOfFrame($payload);
+			} elseif ($m === self::DNL) {
+				$this->readDefineNumberOfLines($payload);
+			}
+			$this->ingestSegment($m, $payload, $chunks);
+		}
+		$this->finalizeParsedChunks($chunks);
+	}
+
+	/**
+	 * Reads the next JPEG marker (the two-byte `0xFF` code) that follows an exactly-sized
+	 * segment, so the reader is always positioned on it.
+	 * @param BinaryReader $binary The reader.
+	 * @return ?array{0: int, 1: int} The marker code and the offset of its leading `0xFF`, or null at end of stream.
+	 */
+	private function nextMarker(BinaryReader $binary): ?array
+	{
+		try {
+			$marker = $binary->readBytes(2);
+		} catch (\RuntimeException $e) {
+			return null;   // end of stream
+		}
+		return [ord($marker[1]), $binary->tell() - 2];
+	}
+
+	/**
+	 * Writes the JPEG to a target, rebuilding the (loaded or edited) segments and copying
+	 * the deferred entropy scan straight from the source in bounded memory, so a JPEG opened
+	 * with {@see fromStreamLazy()} is rewritten around a metadata edit without holding its
+	 * pixels.  A fully loaded JPEG streams the same bytes {@see toBinary()} would.
+	 * @param mixed $target A writable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \InvalidArgumentException When the target is neither.
+	 * @throws \RuntimeException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		$head = $this->markerBytes(self::SOI) . $this->composeInjectedHead();
+		$iccEmitted = false;
+		foreach ($this->getSegments() as $segment) {
+			$head .= $this->composeSegment($segment, $iccEmitted);
+		}
+		$written = StreamIO::writeAll($target, $head);
+		if ($this->_scanRange !== null) {
+			return $written + $this->_scanRange->writeTo($target);
+		}
+		return $written + StreamIO::writeAll($target, $this->_scan);
 	}
 
 	/**

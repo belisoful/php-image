@@ -14,6 +14,9 @@ use Belisoful\Image\GIF\GIFExtension;
 use Belisoful\Image\GIF\GIFBlockType;
 use Belisoful\Image\GIF\GIFFrame;
 use Belisoful\Image\Meta\IPTC;
+use Belisoful\Image\Stream\BinaryReader;
+use Belisoful\Image\Stream\SourceRange;
+use Belisoful\Image\Stream\StreamIO;
 
 /**
  * GIFImage class.
@@ -884,6 +887,20 @@ class GIFImage extends ImageFile
 	 */
 	protected function compose(): string
 	{
+		$out = $this->headerBytes();
+		foreach ($this->_blocks as $block) {
+			$out .= $block->toBinary();
+		}
+		return $out . chr(GIFBlockType::Trailer) . $this->_trailingBytes;
+	}
+
+	/**
+	 * Returns the file header: the signature, the logical-screen descriptor, and the global
+	 * colour table.
+	 * @return string The header bytes.
+	 */
+	private function headerBytes(): string
+	{
 		$packed = ($this->_globalColorTable !== null ? 0x80 : 0)
 			| (($this->_colorResolution & 0x07) << 4)
 			| ($this->_globalSorted ? 0x08 : 0)
@@ -892,12 +909,221 @@ class GIFImage extends ImageFile
 		$out = $this->_version
 			. pack('vv', $this->getWidthDirect() ?? 0, $this->getHeightDirect() ?? 0)
 			. chr($packed) . chr($this->_backgroundIndex) . chr($this->_aspectRatio);
-		if ($this->_globalColorTable !== null) {
-			$out .= $this->_globalColorTable;
+		return $this->_globalColorTable !== null ? $out . $this->_globalColorTable : $out;
+	}
+
+	/**
+	 * Lazily reads a GIF from a seekable stream: the block structure, extensions, and frame
+	 * headers are read, but each frame's LZW image-data run is kept as a deferred range into
+	 * the still-open source rather than loaded, so a GIF far larger than memory opens for a
+	 * metadata edit.  Pair it with {@see streamTo()}; the source must stay open and seekable
+	 * until then.
+	 * @param mixed $stream The seekable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \RuntimeException When the stream is not seekable.
+	 * @throws \UnexpectedValueException When the bytes lack a GIF signature or a block is malformed.
+	 * @return static The lazily parsed GIF.
+	 */
+	public static function fromStreamLazy(mixed $stream): static
+	{
+		StreamIO::rewind($stream);
+		$image = new static();
+		$image->parseStream($stream);
+		return $image;
+	}
+
+	/**
+	 * Walks the block stream of a seekable GIF, reading the small blocks and deferring each
+	 * frame's image-data run.
+	 * @param mixed $stream The seekable stream or resource, positioned at the GIF start.
+	 * @throws \RuntimeException When the stream is not seekable.
+	 * @throws \UnexpectedValueException When the bytes lack a GIF signature or a block is malformed.
+	 */
+	protected function parseStream(mixed $stream): void
+	{
+		$binary = new BinaryReader($stream);
+		if (!$binary->isSeekable()) {
+			throw new \RuntimeException('Lazily reading a GIF requires a seekable stream.');
 		}
+		$header = $binary->readBytes(13);
+		if (strlen($header) < 13 || !static::isGIF($header)) {
+			throw new \UnexpectedValueException(sprintf('GIF data is invalid: %s.', 'missing GIF87a or GIF89a signature'));
+		}
+		$this->_version = substr($header, 0, 6);
+		$this->setWidthDirect(unpack('v', substr($header, 6, 2))[1]);
+		$this->setHeightDirect(unpack('v', substr($header, 8, 2))[1]);
+		$packed = ord($header[10]);
+		$this->_colorResolution = ($packed >> 4) & 0x07;
+		$this->_globalSorted = ($packed & 0x08) !== 0;
+		$this->_backgroundIndex = ord($header[11]);
+		$this->_aspectRatio = ord($header[12]);
+		if ($packed & 0x80) {
+			$this->_globalColorTable = $binary->readBytes(3 * (2 << ($packed & 0x07)));
+		}
+		$pending = null;
+		while (($markerByte = $this->readByteOrNull($binary)) !== null) {
+			$marker = ord($markerByte);
+			if ($marker === GIFBlockType::Trailer) {
+				break;
+			}
+			if ($marker === GIFBlockType::ExtensionIntroducer) {
+				$body = $this->readExtensionBody($binary);
+				$this->parseExtension(chr(GIFBlockType::ExtensionIntroducer) . $body, 0, $pending);
+				continue;
+			}
+			if ($marker === GIFBlockType::ImageSeparator) {
+				$this->parseFrameStream($binary, $stream, $pending);
+				$pending = null;
+				continue;
+			}
+			throw new \UnexpectedValueException(sprintf('GIF data is invalid: %s.', sprintf('unexpected block marker 0x%02X', $marker)));
+		}
+		$this->_trailingBytes = $this->readRemaining($binary);
+	}
+
+	/**
+	 * Reads the image descriptor and defers the frame's LZW image-data run.
+	 * @param BinaryReader $binary The reader, positioned after the image separator.
+	 * @param mixed $stream The still-open source.
+	 * @param ?array $pending A pending graphic-control extension to attach.
+	 */
+	private function parseFrameStream(BinaryReader $binary, mixed $stream, ?array $pending): void
+	{
+		$frame = new GIFFrame();
+		$descriptor = $binary->readBytes(9);   // 8 geometry bytes + 1 packed byte
+		$d = unpack('vleft/vtop/vwidth/vheight', substr($descriptor, 0, 8));
+		$frame->setLeft($d['left']);
+		$frame->setTop($d['top']);
+		$frame->setWidth($d['width']);
+		$frame->setHeight($d['height']);
+		$packed = ord($descriptor[8]);
+		$frame->setInterlaced(($packed & 0x40) !== 0);
+		$frame->setSorted(($packed & 0x20) !== 0);
+		if ($packed & 0x80) {
+			$frame->setLocalColorTable($binary->readBytes(3 * (2 << ($packed & 0x07))));
+		}
+		$frame->setMinCodeSize(max(2, ord($binary->readBytes(1))));
+		$runStart = $binary->tell();
+		while (($size = ord($binary->readBytes(1))) !== 0) {
+			$binary->seek($binary->tell() + $size);   // skip a data sub-block without loading it
+		}
+		$frame->setDeferredData(new SourceRange($stream, $runStart, $binary->tell() - $runStart));
+		if ($pending !== null) {
+			$frame->setHasGraphicControl(true);
+			$frame->setGraphicControlReserved($pending['reserved']);
+			$frame->setDisposalMethod($pending['disposal']);
+			$frame->setUserInput($pending['userInput']);
+			$frame->setDelayTime($pending['delay']);
+			$frame->setTransparentIndex($pending['transparent']);
+		}
+		$this->_blocks[] = $frame;
+	}
+
+	/**
+	 * Reads one extension's bytes (its label and sub-block chain, or the raw XMP packet
+	 * ending in the magic trailer) so the shared {@see parseExtension()} can decode it.
+	 * @param BinaryReader $binary The reader, positioned after the extension introducer.
+	 * @return string The extension bytes (label onward).
+	 */
+	private function readExtensionBody(BinaryReader $binary): string
+	{
+		$label = $binary->readBytes(1);
+		$first = $binary->readBytes(1);
+		if (ord($label) === GIFBlockType::ApplicationLabel && ord($first) === 11) {
+			$identity = $binary->readBytes(11);
+			if ($identity === self::XmpIdentity) {   // raw XMP: not sub-block framed, ends at the magic trailer
+				return $label . $first . $identity . $this->readUntilTrailer($binary);
+			}
+			return $label . $first . $identity . $this->readSubBlockChain($binary);
+		}
+		if (ord($first) === 0) {
+			return $label . $first;
+		}
+		return $label . $first . $binary->readBytes(ord($first)) . $this->readSubBlockChain($binary);
+	}
+
+	/**
+	 * Reads a sub-block chain (length-prefixed blocks ended by a zero block) verbatim.
+	 * @param BinaryReader $binary The reader.
+	 * @return string The chain bytes, including the terminating zero.
+	 */
+	private function readSubBlockChain(BinaryReader $binary): string
+	{
+		$out = '';
+		while (true) {
+			$sizeByte = $binary->readBytes(1);
+			$out .= $sizeByte;
+			$size = ord($sizeByte);
+			if ($size === 0) {
+				return $out;
+			}
+			$out .= $binary->readBytes($size);
+		}
+	}
+
+	/**
+	 * Reads bytes until the magic trailer is seen, returning them (trailer included).
+	 * @param BinaryReader $binary The reader.
+	 * @return string The bytes up to and including the trailer.
+	 */
+	private function readUntilTrailer(BinaryReader $binary): string
+	{
+		$trailer = GIFExtension::MagicTrailer;
+		$length = strlen($trailer);
+		$buffer = '';
+		do {
+			$buffer .= $binary->readBytes(1);
+		} while (strlen($buffer) < $length || substr($buffer, -$length) !== $trailer);
+		return $buffer;
+	}
+
+	/**
+	 * Reads a single byte, or null at end of stream (a GIF without its trailer).
+	 * @param BinaryReader $binary The reader.
+	 * @return ?string The byte, or null at end of stream.
+	 */
+	private function readByteOrNull(BinaryReader $binary): ?string
+	{
+		try {
+			return $binary->readBytes(1);
+		} catch (\RuntimeException $e) {
+			return null;
+		}
+	}
+
+	/**
+	 * Reads whatever remains after the trailer (usually nothing).
+	 * @param BinaryReader $binary The reader.
+	 * @return string The trailing bytes.
+	 */
+	private function readRemaining(BinaryReader $binary): string
+	{
+		$out = '';
+		while (($byte = $this->readByteOrNull($binary)) !== null) {
+			$out .= $byte;
+		}
+		return $out;
+	}
+
+	/**
+	 * Writes the GIF to a target, copying each frame's deferred image-data run straight from
+	 * the source in bounded memory and rebuilding every other block, so a GIF opened with
+	 * {@see fromStreamLazy()} is rewritten around a metadata edit without holding its pixels.
+	 * @param mixed $target A writable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \InvalidArgumentException When the target is neither.
+	 * @throws \RuntimeException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		$written = StreamIO::writeAll($target, $this->headerBytes());
 		foreach ($this->_blocks as $block) {
-			$out .= $block->toBinary();
+			if ($block instanceof GIFFrame && ($range = $block->getDeferredData()) !== null) {
+				$written += StreamIO::writeAll($target, $block->frameHeaderBytes());
+				$written += $range->writeTo($target);
+				continue;
+			}
+			$written += StreamIO::writeAll($target, $block->toBinary());
 		}
-		return $out . chr(GIFBlockType::Trailer) . $this->_trailingBytes;
+		return $written + StreamIO::writeAll($target, chr(GIFBlockType::Trailer) . $this->_trailingBytes);
 	}
 }

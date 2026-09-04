@@ -15,6 +15,7 @@ use Belisoful\Image\Compression\HorizontalPredictor;
 use Belisoful\Image\Compression\LZWCompressor;
 use Belisoful\Image\Compression\PackBitsCompressor;
 use Belisoful\Image\Meta\EXIF;
+use Belisoful\Image\Stream\StreamIO;
 use Belisoful\Image\TIFF\TIFFDataType;
 use Belisoful\Image\TIFF\TIFFDocument;
 use Belisoful\Image\TIFF\TIFFRaster;
@@ -111,6 +112,34 @@ class TIFFImage extends ImageFile
 	protected function parse(): void
 	{
 		$this->_exif = EXIF::fromTiffString($this->getBytesDirect());
+		$this->readMetadataFromExif();
+	}
+
+	/**
+	 * Lazily reads a TIFF from a seekable stream: the metadata is scanned by seeking, and
+	 * the strip/tile pixel data is kept as deferred ranges into the still-open source rather
+	 * than loaded, so a TIFF far larger than memory opens for a metadata edit.  Pair it with
+	 * {@see streamTo()}, which copies the strips straight through with their offsets
+	 * rewritten; the source must stay open and seekable until then.
+	 * @param mixed $stream The seekable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \RuntimeException When the stream is not seekable.
+	 * @throws \UnexpectedValueException When the bytes are not a TIFF structure.
+	 * @return static The lazily parsed TIFF.
+	 */
+	public static function fromStreamLazy(mixed $stream): static
+	{
+		StreamIO::rewind($stream);
+		$image = new static();
+		$image->_exif = EXIF::scanStream($stream, true);   // capture strips as deferred ranges
+		$image->readMetadataFromExif();
+		return $image;
+	}
+
+	/**
+	 * Reads the dimensions, IPTC, and ICC profile from the parsed EXIF/TIFF structure.
+	 */
+	protected function readMetadataFromExif(): void
+	{
 		$ifd0 = $this->_exif->getIfd0();
 		$width = $ifd0->getTagValue(self::WidthTag);
 		$height = $ifd0->getTagValue(self::HeightTag);
@@ -122,6 +151,31 @@ class TIFFImage extends ImageFile
 			$data = $icc->getValues();
 			$this->setICCProfileDirect(is_array($data) ? implode('', array_map('chr', $data)) : (string) $data);
 		}
+	}
+
+	/**
+	 * Writes the TIFF to a target, copying each deferred strip/tile straight from the source
+	 * in bounded memory (offsets rewritten), so a TIFF opened with {@see fromStreamLazy()}
+	 * is rewritten around a metadata edit without holding its pixels.  A fully loaded TIFF
+	 * streams the same bytes {@see toBinary()} would.
+	 * @param mixed $target A writable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \InvalidArgumentException When the target is neither.
+	 * @throws \RuntimeException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		if ($this->_exif === null) {
+			return StreamIO::writeAll($target, $this->getBytesDirect());
+		}
+		$this->_exif->setIPTC($this->getIptcDirect());
+		$icc = $this->getICCProfileDirect();
+		if ($icc === null) {
+			$this->_exif->getIfd0()->removeTag(self::ICCTag);
+		} else {
+			$this->_exif->getIfd0()->setTagValues(self::ICCTag, TIFFDataType::Undefined, $icc);
+		}
+		return $this->_exif->streamTo($target);
 	}
 
 	/**

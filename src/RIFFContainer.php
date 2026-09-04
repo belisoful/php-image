@@ -10,6 +10,9 @@
 
 namespace Belisoful\Image;
 
+use Belisoful\Image\Stream\BinaryReader;
+use Belisoful\Image\Stream\SourceRange;
+use Belisoful\Image\Stream\StreamIO;
 use Psr\Http\Message\StreamInterface;
 
 /**
@@ -63,8 +66,53 @@ class RIFFContainer
 	 */
 	public static function fromStream(mixed $stream): static
 	{
-		\Belisoful\Image\Stream\StreamIO::rewind($stream);
+		StreamIO::rewind($stream);
 		return static::fromString(static::sourceBytes($stream));
+	}
+
+	/**
+	 * Lazily reads a RIFF container from a seekable stream: every chunk header is read,
+	 * but a chunk whose id is in {@see $deferTypes} keeps its bytes as a deferred range
+	 * into the still-open source rather than loading them, so a container far larger than
+	 * memory (a big WebP pixel chunk) opens for a metadata edit.  Pair it with
+	 * {@see streamTo()}; the source must stay open and seekable until then.
+	 * @param mixed $stream The seekable {@see StreamInterface} or PHP stream resource.
+	 * @param string[] $deferTypes The chunk ids to keep deferred (the large payloads).
+	 * @throws \RuntimeException When the stream is not seekable.
+	 * @throws \UnexpectedValueException When the bytes lack a RIFF header.
+	 * @return static The lazily parsed container.
+	 */
+	public static function fromStreamLazy(mixed $stream, array $deferTypes): static
+	{
+		StreamIO::rewind($stream);
+		$binary = new BinaryReader($stream);
+		if (!$binary->isSeekable()) {
+			throw new \RuntimeException('Lazily reading a RIFF container requires a seekable stream.');
+		}
+		$header = $binary->readBytes(12);
+		if (strncmp($header, RIFFChunkType::Riff, 4) !== 0) {
+			throw new \UnexpectedValueException(sprintf('RIFF data is invalid: %s.', 'missing RIFF header'));
+		}
+		$riff = new static();
+		$riff->_formType = substr($header, 8, 4);
+		while (true) {
+			$start = $binary->tell();
+			try {
+				$chunkHeader = $binary->readBytes(8);
+			} catch (\RuntimeException $e) {
+				break;   // no more chunks
+			}
+			$id = substr($chunkHeader, 0, 4);
+			$size = (int) unpack('V', substr($chunkHeader, 4, 4))[1];
+			$whole = 8 + $size + ($size & 1); // header + payload + even-length pad
+			if (in_array($id, $deferTypes, true)) {
+				$riff->_chunks[] = ImageChunk::deferred($id, $size, $start + 8, new SourceRange($stream, $start, $whole));
+			} else {
+				$riff->_chunks[] = new ImageChunk($id, $size, $start + 8, $binary->readBytes($size));
+			}
+			$binary->seek($start + $whole);
+		}
+		return $riff;
 	}
 
 	/**
@@ -220,6 +268,40 @@ class RIFFContainer
 			}
 		}
 		return RIFFChunkType::Riff . pack('V', strlen($body)) . $body;
+	}
+
+	/**
+	 * Writes the container to a target, copying each deferred chunk straight from the
+	 * source in bounded memory and rebuilding every other (loaded or edited) chunk, so a
+	 * container opened with {@see fromStreamLazy()} is rewritten without holding its large
+	 * payloads.  The RIFF size header is computed from the chunk sizes, deferred included.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @throws \InvalidArgumentException When the target is neither.
+	 * @throws \RuntimeException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		$bodyLength = strlen($this->getFormType());
+		foreach ($this->getChunks() as $chunk) {
+			$dataLength = $chunk->getDeferredRange() !== null ? $chunk->getSize() : strlen($chunk->getData());
+			$bodyLength += 8 + $dataLength + ($dataLength & 1);
+		}
+		$written = StreamIO::writeAll($target, RIFFChunkType::Riff . pack('V', $bodyLength) . $this->getFormType());
+		foreach ($this->getChunks() as $chunk) {
+			$range = $chunk->getDeferredRange();
+			if ($range !== null) {
+				$written += $range->writeTo($target);   // whole chunk: id + size + payload + pad, verbatim
+				continue;
+			}
+			$data = $chunk->getData();
+			$bytes = $chunk->getType() . pack('V', strlen($data)) . $data;
+			if (strlen($data) & 1) {
+				$bytes .= "\0";
+			}
+			$written += StreamIO::writeAll($target, $bytes);
+		}
+		return $written;
 	}
 
 	/**

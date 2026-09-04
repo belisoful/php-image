@@ -10,7 +10,9 @@
 
 namespace Belisoful\Image;
 
+use Belisoful\Image\Meta\EXIF;
 use Belisoful\Image\Meta\IPTC;
+use Belisoful\Image\Meta\XMP;
 use Belisoful\Image\Stream\StreamIO;
 use Psr\Http\Message\StreamInterface;
 
@@ -23,9 +25,22 @@ use Psr\Http\Message\StreamInterface;
  * and any embedded metadata.
  *
  * The readers report the canvas {@see getWidth() width} and {@see getHeight() height},
- * the {@see getFormat() format} name, and where present the {@see getIPTC() IPTC}
- * record set and {@see getICCProfile() ICC profile}.  They read the image without
- * re-encoding it.
+ * the {@see getFormat() format} name, and where present the {@see getEXIF() EXIF},
+ * {@see getXMP() XMP}, {@see getIPTC() IPTC} record set and {@see getICCProfile() ICC
+ * profile} — the metadata common across formats, reached the same way whatever the
+ * container.  They read the image without re-encoding it.
+ *
+ * Calling a factory on the base class itself detects the format from the bytes and opens
+ * the matching container, so a caller that does not know the format up front can still
+ * read one polymorphically:
+ *
+ * ```php
+ * $image = ImageFile::fromFile('photo.unknown');   // sniffs JPEG/PNG/GIF/WebP/TIFF
+ * [$image->getFormat(), $image->getWidth(), $image->hasEXIF(), $image->getXMP()];
+ * ```
+ *
+ * A factory called on a concrete container ({@see JPEGImage::fromFile()}) stays bound to
+ * that format and rejects bytes of any other.
  *
  * @author Brad Anderson <belisoful@icloud.com>
  */
@@ -63,9 +78,34 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	 */
 	public static function fromString(string $bytes): static
 	{
+		if (static::class === self::class) {
+			// Called on the abstract base: detect the container from the bytes and open it.
+			$container = self::detect($bytes);
+			/** @var static $image (a detected container is-a ImageFile, which static is here) */
+			$image = $container::fromString($bytes);
+			return $image;
+		}
 		$image = new static();
 		$image->load($bytes);
 		return $image;
+	}
+
+	/**
+	 * Resolves the container class for an image from its leading bytes.
+	 * @param string $bytes The image bytes.
+	 * @throws \UnexpectedValueException When the bytes are not a recognized format.
+	 * @return class-string<ImageFile> The matching container class.
+	 */
+	protected static function detect(string $bytes): string
+	{
+		return match (true) {
+			JPEGImage::isJPEG($bytes) => JPEGImage::class,
+			PNGImage::isPNG($bytes) => PNGImage::class,
+			GIFImage::isGIF($bytes) => GIFImage::class,
+			WebPImage::isWebP($bytes) => WebPImage::class,
+			TIFFImage::isTIFF($bytes) => TIFFImage::class,
+			default => throw new \UnexpectedValueException('The bytes are not a recognized image format (JPEG, PNG, GIF, WebP, or TIFF).'),
+		};
 	}
 
 	/**
@@ -217,6 +257,19 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	}
 
 	/**
+	 * Writes the rebuilt image to a target, streaming any large payload in bounded memory
+	 * where the container parsed lazily (its payloads kept as
+	 * {@see \Belisoful\Image\Stream\SourceRange} references, via `fromStreamLazy()`), so a
+	 * file too large to hold can still be rewritten around a metadata edit; a fully loaded
+	 * container writes the same bytes {@see toBinary()} would.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @throws \InvalidArgumentException When the target is neither.
+	 * @throws \RuntimeException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	abstract public function streamTo(mixed $target): int;
+
+	/**
 	 * Writes the rebuilt image to a file.
 	 * @param string $path The destination file path.
 	 * @throws \RuntimeException When the file cannot be written.
@@ -248,6 +301,60 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	{
 		return $this->getHeightDirect();
 	}
+
+	/**
+	 * Indicates whether the image carries EXIF metadata.
+	 * @return bool Whether EXIF is present.
+	 */
+	public function hasEXIF(): bool
+	{
+		return $this->getEXIF() !== null;   // via the accessor, which a container overrides
+	}
+
+	/**
+	 * Returns the parsed EXIF metadata.  A format with no EXIF carrier (GIF) has none, so
+	 * the base returns null; a container that carries EXIF overrides this.
+	 * @return ?EXIF The EXIF metadata, or null when absent.
+	 */
+	public function getEXIF(): ?EXIF
+	{
+		return null;
+	}
+
+	/**
+	 * Sets (or clears, when null) the EXIF metadata.  A container that carries EXIF
+	 * overrides this; on a format with no writable EXIF carrier, setting a non-null value
+	 * throws rather than silently dropping it (clearing null is a no-op).
+	 * @param ?EXIF $exif The EXIF metadata, or null to drop it.
+	 * @throws \RuntimeException When the format has no writable EXIF carrier.
+	 */
+	public function setEXIF(?EXIF $exif): void
+	{
+		if ($exif !== null) {
+			throw new \RuntimeException(sprintf('A %s image has no writable EXIF carrier.', $this->getFormat()));
+		}
+	}
+
+	/**
+	 * Indicates whether the image carries XMP metadata.
+	 * @return bool Whether an XMP packet is present.
+	 */
+	public function hasXMP(): bool
+	{
+		return $this->getXMP() !== null;   // via the accessor every container implements
+	}
+
+	/**
+	 * Returns the parsed XMP packet.
+	 * @return ?XMP The XMP packet, or null when absent.
+	 */
+	abstract public function getXMP(): ?XMP;
+
+	/**
+	 * Sets (or clears, when null) the XMP packet written back on compose.
+	 * @param ?XMP $xmp The XMP packet, or null to drop it.
+	 */
+	abstract public function setXMP(?XMP $xmp): void;
 
 	/**
 	 * Indicates whether the image carries IPTC metadata.
@@ -354,7 +461,12 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 			if ($value instanceof PrivacyScrubbableInterface) {
 				$count = $value->clearPrivateData($types);
 				if ($count > 0) {
-					call_user_func([$this, $setter], $value);
+					try {
+						call_user_func([$this, $setter], $value);
+					} catch (\RuntimeException $e) {
+						// A read-only carrier (TIFF's EXIF is its live IFD, already scrubbed in
+						// place above) refuses the write-back; the scrub still took effect.
+					}
 					$removed += $count;
 				}
 			}

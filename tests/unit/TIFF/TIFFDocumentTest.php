@@ -305,6 +305,22 @@ class TIFFDocumentTest extends PHPUnit\Framework\TestCase
 		self::assertSame(['tag 273 has 2 offsets but 1 byte counts'], $reparsed->getWarnings());
 	}
 
+	public function testScannedMismatchedOffsetAndCountTagsAreNotDeferred()
+	{
+		$tiff = new TIFFDocument();
+		$ifd = new TIFFIfd();
+		$ifd->setTagValues(256, TIFFDataType::ULong, [4]);
+		$ifd->setTagValues(273, TIFFDataType::ULong, [8, 8]);   // two strip offsets
+		$ifd->setTagValues(279, TIFFDataType::ULong, [4]);      // but one byte count
+		$tiff->addIfd($ifd);
+
+		$source = TestIOHelper::dataResource($tiff->toBinary());
+		$scanned = TIFFDocument::scanStream($source, null, 16777216, true);
+		self::assertNull($scanned->getIfd(0)->getTag(273)->getExternalData());
+		self::assertSame(['tag 273 has 2 offsets but 1 byte counts'], $scanned->getWarnings());
+		fclose($source);
+	}
+
 	public function testByteCountsTagIsRetypedForExternalData()
 	{
 		// A byte-counts tag of an inapplicable type is retyped to ULong on compose.

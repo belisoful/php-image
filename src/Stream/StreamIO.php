@@ -115,4 +115,52 @@ class StreamIO
 		}
 		return $handle;
 	}
+
+	/**
+	 * Copies a byte range from a seekable source to a target in bounded chunks, so a
+	 * payload far larger than memory (a TIFF strip, a JPEG scan) moves from one stream to
+	 * another without ever being held in full.  The source is seeked to {@see $offset};
+	 * the target is written at its current position.
+	 * @param mixed $source A seekable {@see StreamInterface} or PHP stream resource.
+	 * @param int $offset The absolute byte offset in the source to start at.
+	 * @param int $length The number of bytes to copy.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @param int $chunkSize The transfer buffer size in bytes. Default 1 MiB.
+	 * @throws \InvalidArgumentException When the source is not a seekable stream, the length
+	 *   is negative, or the chunk size is not positive.
+	 * @throws \RuntimeException When the source cannot seek or ends before the range does.
+	 * @return int The number of bytes copied (equal to {@see $length}).
+	 */
+	public static function copyRange(mixed $source, int $offset, int $length, mixed $target, int $chunkSize = 1048576): int
+	{
+		if ($length < 0) {
+			throw new \InvalidArgumentException(sprintf('A copy length cannot be negative; \'%s\' given.', $length));
+		}
+		if ($chunkSize < 1) {
+			throw new \InvalidArgumentException(sprintf('A copy chunk size must be positive; \'%s\' given.', $chunkSize));
+		}
+		if ($source instanceof StreamInterface) {
+			if (!$source->isSeekable()) {
+				throw new \InvalidArgumentException('Copying a byte range requires a seekable source stream.');
+			}
+			$source->seek($offset);
+		} elseif (is_resource($source)) {
+			if (@fseek($source, $offset) !== 0) {   // a non-seekable resource (a pipe) also warns; the return value is enough
+				throw new \RuntimeException(sprintf('The source stream cannot seek to offset %s.', $offset));
+			}
+		} else {
+			throw new \InvalidArgumentException(sprintf('A copy source must be a seekable PSR-7 StreamInterface or PHP stream resource; \'%s\' given.', get_debug_type($source)));
+		}
+		$copied = 0;
+		while ($copied < $length) {
+			$take = min($chunkSize, $length - $copied);
+			$chunk = $source instanceof StreamInterface ? $source->read($take) : fread($source, $take);
+			if ($chunk === false || $chunk === '') {
+				throw new \RuntimeException(sprintf('The source stream ended after %s of %s bytes.', $copied, $length));
+			}
+			self::writeAll($target, $chunk);
+			$copied += strlen($chunk);
+		}
+		return $copied;
+	}
 }
