@@ -1049,15 +1049,15 @@ class GIFImage extends ImageFile
 	private function readSubBlockChain(BinaryReader $binary): string
 	{
 		$out = '';
-		while (true) {
+		do {
 			$sizeByte = $binary->readBytes(1);
 			$out .= $sizeByte;
 			$size = ord($sizeByte);
-			if ($size === 0) {
-				return $out;
+			if ($size !== 0) {
+				$out .= $binary->readBytes($size);
 			}
-			$out .= $binary->readBytes($size);
-		}
+		} while ($size !== 0);
+		return $out;
 	}
 
 	/**
