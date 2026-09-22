@@ -101,7 +101,12 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          extensions: ctype, dom, gd, iconv, imagick, intl, json, mbstring, pcre, spl
+          # xdebug is pinned to a stable release: setup-php otherwise takes the newest
+          # PECL build, and 3.6.0alpha1 mis-reports path coverage badly enough to fail
+          # this gate on unchanged code (measured 2026-09-22 — the same commit scored
+          # 28.87% of branches taken under 3.6.0alpha1 and 99.7% under 3.5.3, with every
+          # functional job green). Raise the pin deliberately, after checking a run.
+          extensions: ctype, dom, gd, iconv, imagick, intl, json, mbstring, pcre, spl, xdebug-3.5.3
           # Branch data comes from xdebug; pcov records lines only.
           coverage: xdebug
 
