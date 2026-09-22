@@ -30,12 +30,26 @@ Every format here is supported in both directions — reading and writing.
   **APNG animation is first class** — frames round-trip byte-faithfully.
 - **WebP / RIFF** — dimensions from `VP8`, `VP8L` or `VP8X`; ICC, EXIF and XMP read and
   written, with the `VP8X` header and its feature flags kept in step automatically.
+- **AVI / RIFF** — `LIST INFO` tags, XMP in `_PMX` and the `IDIT` timestamp, read and written
+  without ever decoding the media. The shared RIFF layer also reads and rewrites the two
+  variant headers in the form it found them: `RIFX`, which stores every size big-endian, and
+  RF64/BW64, which keeps its 64-bit sizes in a leading `ds64` chunk.
 - **GIF 87a and 89a** — the whole standard at block level, animation included. Frames are kept
   exactly as authored rather than coalesced, so sub-rectangles, disposal, interlacing and local
   palettes survive a round trip unchanged.
+- **ISO BMFF** — HEIF, AVIF, MP4 and QuickTime, told apart by the `ftyp` brand. Exif and XMP
+  ride `meta` items on a still and the Adobe `uuid` box on a movie, the ICC profile rides a
+  `colr` item property, and movie user data is read and written in both the QuickTime `udta`
+  text-atom and the iTunes `ilst` conventions. Nothing in the file moves: new bytes go into a
+  fresh `mdat` and only the offset that names them is rewritten.
+- **JPEG XL** — `Exif`, `xml ` (XMP) and `jumb` boxes over the container's box grammar, with
+  the pixel dimensions read out of the codestream's bit-packed `SizeHeader`. A bare codestream
+  is promoted to a container on the first write rather than refusing the write.
 
-Two of those formats simply have nowhere to put IPTC — WebP and GIF — so `setIPTC()` throws
-rather than accepting records it would quietly lose.
+Five of those formats simply have nowhere to put IPTC — WebP, GIF, AVI, ISO BMFF and JPEG XL —
+so `setIPTC()` throws rather than accepting records it would quietly lose. The same rule holds
+for every other carrier a format lacks: AVI has neither an Exif nor an ICC carrier, and JPEG XL
+keeps its ICC profile inside the codestream, so those setters throw too.
 
 ## Metadata
 
@@ -540,7 +554,7 @@ vendor/bin/php-cs-fixer fix tests                    # (the finder excludes test
 vendor/bin/phpstan analyse --memory-limit=1G         # static analysis (level 4)
 ```
 
-Coverage is gated rather than merely reported, at two depths. **Lines** (99.92%) are checked
+Coverage is gated rather than merely reported, at two depths. **Lines** (99.91%) are checked
 on every push; every source file must be complete except a handful whose remaining lines no
 test can reach, each justified in [AGENTS.md](AGENTS.md):
 
@@ -549,9 +563,9 @@ XDEBUG_MODE=coverage vendor/bin/phpunit --testsuite unit --coverage-clover build
 php tests/test_tools/coverage-gate.php build/logs/clover.xml
 ```
 
-**Branches** (99.67%) are checked nightly, because instrumenting every branch takes far
-longer than the suite itself. It is the stronger measure: a covered line still hides a
-decision that only ever goes one way. The twenty branches that remain are unreachable by
+**Branches** (99.67%) are checked on pull requests and on main rather than on every push,
+because instrumenting every branch takes far longer than the suite itself. It is the stronger measure: a covered line still hides a
+decision that only ever goes one way. The nineteen branches that remain are unreachable by
 construction — mostly edges PHP emits itself, such as the implicit `UnhandledMatchError` of a
 `match` whose subject is already range-checked:
 

@@ -1,7 +1,7 @@
 {
 	"name": "belisoful/php-image",
 	"type": "library",
-	"description": "Image containers, metadata editing, and codecs for PHP: read-write JPEG, TIFF, PNG, WebP/RIFF, and GIF87a/89a; EXIF through Exif 3.1 with makernotes, XMP (ISO 16684-1), IPTC (IIM), Photoshop 8BIM, JFIF/JFXX, JUMBF, PrintIM, and Exif WAVE audio; read-write ICC profiles with a pure-PHP matrix/TRC color transform; dual GD/ImageMagick raster conversion; and the LZW/GIF-LZW/PackBits/CCITT-fax/horizontal-predictor codecs.",
+	"description": "Image containers, metadata editing, and codecs for PHP: read-write JPEG, TIFF, PNG, WebP/RIFF, GIF87a/89a, AVI, ISO BMFF (HEIF/AVIF/MP4/QuickTime), and JPEG XL; EXIF through Exif 3.1 with makernotes, XMP (ISO 16684-1), IPTC (IIM), Photoshop 8BIM, JFIF/JFXX, JUMBF, PrintIM, and Exif WAVE audio; read-write ICC profiles with a pure-PHP matrix/TRC color transform; dual GD/ImageMagick raster conversion; and the LZW/GIF-LZW/PackBits/CCITT-fax/horizontal-predictor codecs.",
 	"keywords": [
 		"image",
 		"jpeg",
@@ -11,6 +11,13 @@
 		"riff",
 		"gif",
 		"apng",
+		"avi",
+		"bmff",
+		"heif",
+		"avif",
+		"mp4",
+		"quicktime",
+		"jxl",
 		"exif",
 		"xmp",
 		"iptc",

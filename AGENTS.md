@@ -46,7 +46,7 @@
   - Examples, where necessary
   - `@author` for attribution
 - Inline comments should be in English and start with `//`
-- Do NOT add `@since` tags: the library is at its initial release (v1.0.0), so every symbol is "since 1.0.0" and the tag carries no information.
+- Do NOT add `@since` tags: this library does not track availability per symbol. Everything but the AVI, ISO BMFF and JPEG XL containers shipped in v1.0.0, and those arrived in v1.1.0, which the version note below records instead.
 - All documentation should be written in present perfect tense
 
 ### Error Handling
@@ -68,7 +68,7 @@
 - This is a new, pre-release library with no published API to preserve, so backward compatibility is NOT a constraint; prefer the better design over a compatible one
 - A full check consists of the 4 checks (in order): `php -l` compile, php-cs-fixer, phpstan, phpunit (all checks must pass successfully)
 - A full check must be done for code to be ready for git commit.
-- The current version of this library is **v1.0.0** (initial release). It requires PHP 8.1+ and `psr/http-message` only. Because it is the initial release, source docblocks carry no `@since` tags.
+- The current version of this library is **v1.1.0**, which adds the AVI, ISO BMFF and JPEG XL containers to the v1.0.0 initial release. It requires PHP 8.1+ and `psr/http-message` only. Source docblocks carry no `@since` tags, and the version is the same in the sibling repository apart from a sub-fix component.
 - Classes live under `Belisoful\Image\`, `Belisoful\Image\TIFF\`, `Belisoful\Image\GIF\`, `Belisoful\Image\PNG\`, `Belisoful\Image\ICC\`, `Belisoful\Image\Meta\`, `Belisoful\Image\Meta\Makernote\`, `Belisoful\Image\Compression\`, and the infrastructure namespaces `Belisoful\Image\Stream\` and `Belisoful\Image\Util\` (PSR-4 `Belisoful\Image\` → `src/`).
 - The tag knowledge bases (`EXIFTags`, `MakernoteTags`, `MakernoteTables`, `PhotoshopResourceNames`) are fact tables from the public specs; keep them complete and factual when extending.
 - EXIF rewrites must keep the makernote pinned at its original offset (the `TIFFTag::setPreserveOffset()` invariant). The pin predicate lives in **one** place — `TIFFDocument::isPinned()` — which both `collectPins()` (the compose reservation) and `layoutIfd()` (the actual placement) call, so the reserved-space list can never drift from what the writer pins; do not re-inline that condition. `EXIF`/`TIFFImage` surface those ranges as `getReservedSpaces()`, with `getFreeSpaces()` as the complement over the composed length, so a caller windows the bytes itself; the library ships no stream decorator for this. TIFF files are read-write: keep the `TIFFTag::setExternalData()` strip/tile capture-and-relocate mechanism (and its offsets/byte-counts pairing) intact on any writer change.
@@ -97,7 +97,7 @@
   100% can hide a branch no test drives. The gate in CI is the authority; when a line is
   reported uncovered there but covered locally, believe CI and write the test that actually
   exercises the branch. Do not chase it by weakening the gate.
-- Coverage is gated at two depths and both are expected to hold. **Lines: 99.82%** —
+- Coverage is gated at two depths and both are expected to hold. **Lines: 99.91%** —
   `tests/test_tools/coverage-gate.php`, run on every push. **Branches: 99.69%** —
   `tests/test_tools/branch-gate.php`, run by the `branches` job of `.github/workflows/php-image.yml` on pull requests and main,
   because a `--path-coverage` run takes far longer than the suite itself. Branch coverage is
@@ -112,24 +112,22 @@
   where these classes were framework code and never in `src` at all. They remain in the line
   gate and under PHPStan level 4, which reports the never-flipping condition branch coverage
   is for. Do not widen that scope without re-measuring the runtime first. Every one of the 19 remaining untaken branches is unreachable by construction,
-  and the gate's per-file figures are **maximums with a total cap**, not exact counts: the
-  compiler emits these edges, so which site carries one moves between PHP versions — PHP 8.1
-  reports the dead multi-catch rethrow in `TIFFDocument::scanIfd()` and PHP 8.3 the identical
-  one in `EXIF::scanStream()`. A file under its maximum is reported, not failed.
   and most are not code anyone wrote — PHP emits an implicit `UnhandledMatchError` edge for a
   `match` behind a range guard, an implicit `return null` after a `while (true)` that only
   exits by return or throw, an implicit `default` for a `switch` over a validated private
   field, and an implicit rethrow for a multi-catch whose `try` can only raise the listed
   types. The rest are guards made redundant by an identical earlier check. Do not chase them.
-- Line coverage of `src` is **99.82%** and is expected to stay there: a change that adds
-  an uncovered line is a change that needs a test.  Thirteen lines are knowingly
+  The gate's per-file figures are **maximums with a total cap**, not exact counts: the
+  compiler emits these edges, so which site carries one moves between PHP versions — PHP 8.1
+  reports the dead multi-catch rethrow in `TIFFDocument::scanIfd()` and PHP 8.3 the identical
+  one in `EXIF::scanStream()`. A file under its maximum is reported, not failed.
+- Line coverage of `src` is **99.91%** and is expected to stay there: a change that adds
+  an uncovered line is a change that needs a test.  Exactly seven lines are knowingly
   unreachable from a test, and each is unreachable for a stated reason — do not "cover"
   them with contrived tests, and do not silence them with `@codeCoverageIgnore`:
   - `CCITTFaxCompressor::writeRun()` — the `$makeup < 64` break.  Every multiple of 64
     from 64 to 2560 has a code in `ExtendedCodes` or in both colour tables, so the
     make-up search always succeeds on its first iteration.
-  - `JUMBFBox::toBinary()` — the 64-bit extended length.  Emitting it needs a single
-    in-memory payload larger than 4 GiB.
   - `ImageGraphicsGD::monoPixels()` — the allocation guard.  `imagecreatetruecolor()`
     is called with the *source's* dimensions, so it can only fail for a source of
     ~537 M pixels that must already exist to be passed in (measured: 33 s, 3.7 GB).
@@ -137,7 +135,7 @@
   - `ImageGraphicsImagick::paletteQuantize()` — the over-budget palette lookup.
     ImageMagick caps `quantizeImage(256, …)` at the requested colour count and the
     pixel export can only merge colours, never split them.  The branch's arithmetic is
-    asserted directly by `TSmallApiTest::testGraphicsClosestPaletteIndex`.
+    asserted directly by `SmallApiTest::testGraphicsClosestPaletteIndex`.
   - `StreamIO`/`BinaryReader` — `fopen('php://temp')` and `ftell()` failing on a live
     handle; PHP offers no way to make either fail without OS-level fault injection.
   - `BitReader`/`BitWriter` — the 33-64-bit-field rejection reachable only on a 32-bit
@@ -146,6 +144,14 @@
     runs but whose condition never flips.  PHPStan level 4 found one such dead guard
     (`KonicaMinoltaMakernote`) that 100% line coverage would never have revealed.
 - NEVER add/change phpunit command options when unit testing; only run project unit tests as specified
+
+## Mirror repository — keep in sync
+
+This repo and **[prado-image](https://github.com/pradosoft/prado-image)** (`../prado-image`) are mirrors of one another: the same library, a general standalone PHP library, the sibling being customized for the PRADO framework. They must remain **synchronized in features and function at all times**, including source, tests, the coverage/branch gates, CI workflows, and the `agents/` notes. A task here is not complete until the same change is applied to the sibling.
+
+Differences are limited to the host adaptation — see the table in [CLAUDE.md](CLAUDE.md) for the full mapping (`EXIF` here is `TEXIF` there; `Belisoful\Image\` maps to `Prado\IO\Image\`; SPL exceptions with inline messages map to Prado exceptions with `config/errorMessages.txt` keys). Everything else — class order, method names and signatures, test names, documented invariants — must match file for file.
+
+Versions are identical between the repos except for the sub-fix component (`v0.0.0.x`, the trailing `x`), which may differ; the `major.minor.patch` prefix always matches.
 
 ## Development Environment
 - PHP 8.1 or higher required

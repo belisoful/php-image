@@ -1,5 +1,8 @@
 <?php
 
+use Belisoful\Image\AVIImage;
+use Belisoful\Image\BMFFFile;
+use Belisoful\Image\JXLImage;
 use Belisoful\Image\PrivacyScrubbableInterface;
 use Belisoful\Image\Meta\EXIF;
 use Belisoful\Image\Meta\IPTC;
@@ -471,6 +474,64 @@ class PrivacyScrubTest extends PHPUnit\Framework\TestCase
 			$this->encoded('imagegif'),
 			fn (GIFImage $gif) => $gif->addComment('hi Jane'),
 			fn (GIFImage $gif) => self::assertSame([], $gif->getComments(), 'GIF comment gone'),
+		);
+	}
+
+	public function testAviScrubReachesEveryCarrier()
+	{
+		$this->assertContainerScrubReachesEveryCarrier(
+			AVIImage::class,
+			ContainerFixtures::avi(),
+			function (AVIImage $avi) {
+				$avi->setInfoValue(AVIImage::InfoArtist, 'Jane Doe');
+				$avi->setInfoValue(AVIImage::InfoName, 'Her Movie');
+				$avi->setDigitizationTime('Mon Jan 01 00:00:00 2024');
+			},
+			function (AVIImage $avi) {
+				self::assertNull($avi->getInfo()[AVIImage::InfoArtist] ?? null, 'AVI INFO artist gone');
+				self::assertNull($avi->getInfo()[AVIImage::InfoName] ?? null, 'AVI INFO name gone');
+				self::assertNull($avi->getDigitizationTime(), 'AVI IDIT gone');
+			},
+		);
+	}
+
+	/** A movie keeps its identifying fields in `moov`/`udta`, not in an item. */
+	public function testBmffMovieScrubReachesEveryCarrier()
+	{
+		$this->assertContainerScrubReachesEveryCarrier(
+			BMFFFile::class,
+			ContainerFixtures::movie(),
+			function (BMFFFile $bmff) {
+				$bmff->setUserDataValue(BMFFFile::KeyArtist, 'Jane Doe');
+				$bmff->setUserDataValue(BMFFFile::KeyLocation, '+34.05-118.24/');
+				$bmff->setUserDataValue(BMFFFile::KeyEncoder, 'TestEnc');
+			},
+			function (BMFFFile $bmff) {
+				self::assertNull($bmff->getUserDataValue(BMFFFile::KeyArtist), 'BMFF author user data gone');
+				self::assertNull($bmff->getUserDataValue(BMFFFile::KeyLocation), 'BMFF location user data gone');
+				self::assertNull($bmff->getUserDataValue(BMFFFile::KeyEncoder), 'BMFF encoder user data gone');
+			},
+		);
+	}
+
+	/** A still keeps its EXIF in a `meta` item instead, which the same one call must reach. */
+	public function testBmffStillScrubReachesItsExifItem()
+	{
+		$this->assertContainerScrubReachesEveryCarrier(
+			BMFFFile::class,
+			ContainerFixtures::heif(),
+			fn (BMFFFile $bmff) => null,
+			fn (BMFFFile $bmff) => null,
+		);
+	}
+
+	public function testJxlScrubReachesEveryCarrier()
+	{
+		$this->assertContainerScrubReachesEveryCarrier(
+			JXLImage::class,
+			ContainerFixtures::jxl(),
+			fn (JXLImage $jxl) => null,
+			fn (JXLImage $jxl) => null,
 		);
 	}
 

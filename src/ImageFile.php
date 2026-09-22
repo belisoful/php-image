@@ -103,6 +103,9 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 			PNGImage::isPNG($bytes) => PNGImage::class,
 			GIFImage::isGIF($bytes) => GIFImage::class,
 			WebPImage::isWebP($bytes) => WebPImage::class,
+			AVIImage::isAVI($bytes) => AVIImage::class,
+			JXLImage::isJXL($bytes) => JXLImage::class,
+			BMFFFile::isBMFF($bytes) => BMFFFile::class,
 			TIFFImage::isTIFF($bytes) => TIFFImage::class,
 			default => throw new \UnexpectedValueException('The bytes are not a recognized image format (JPEG, PNG, GIF, WebP, or TIFF).'),
 		};

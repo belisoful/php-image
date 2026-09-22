@@ -23,7 +23,6 @@
  */
 const ALLOWED_UNCOVERED = [
 	'src/Compression/CCITTFaxCompressor.php' => 1,
-	'src/Meta/JUMBF/JUMBFBox.php' => 2,
 	'src/ImageGraphicsGD.php' => 1,
 	'src/ImageGraphicsImagick.php' => 1,
 	// fopen('php://temp') / ftell() failing on a live handle; PHP offers no way to make

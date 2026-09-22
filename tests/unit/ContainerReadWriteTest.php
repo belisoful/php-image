@@ -1,5 +1,8 @@
 <?php
 
+use Belisoful\Image\AVIImage;
+use Belisoful\Image\BMFFFile;
+use Belisoful\Image\JXLImage;
 use Belisoful\Image\ImageGraphicsLibraryInterface;
 use Belisoful\Image\Meta\EXIF;
 use Belisoful\Image\Meta\IPTC;
@@ -96,6 +99,50 @@ class ContainerReadWriteTest extends PHPUnit\Framework\TestCase
 			self::assertTrue($round->hasICCProfile(), "$name hasICCProfile");
 			self::assertTrue($round->hasIPTC(), "$name hasIPTC");
 		}
+	}
+
+	/**
+	 * The other half of the matrix: a carrier the format has no home for must be **refused**,
+	 * not accepted and dropped.  Clearing is always allowed, and a refusal must leave the file
+	 * as it was rather than half-written.  WebP is proved on its own below, because its fixture
+	 * needs GD's optional WebP support and a skip here would take the other containers with it.
+	 */
+	public function testEveryContainerRefusesTheCarriersItHasNoHomeFor()
+	{
+		$cases = [
+			'GIF' => [GIFImage::class, fn (): string => $this->gif(), ['IPTC']],
+			'AVI' => [AVIImage::class, fn (): string => ContainerFixtures::avi(), ['EXIF', 'ICCProfile', 'IPTC']],
+			'BMFF' => [BMFFFile::class, fn (): string => ContainerFixtures::heif(), ['IPTC']],
+			'JXL' => [JXLImage::class, fn (): string => ContainerFixtures::jxl(), ['ICCProfile', 'IPTC']],
+		];
+		foreach ($cases as $name => [$class, $bytes, $missing]) {
+			foreach ($missing as $carrier) {
+				$file = $class::fromString($bytes());
+				self::assertNull($file->{"get$carrier"}(), "$name get$carrier");
+				self::assertFalse($file->{"has$carrier"}(), "$name has$carrier");
+				$file->{"set$carrier"}(null);       // dropping what is not there is always fine
+
+				try {
+					$file->{"set$carrier"}($this->carrierValue($carrier));
+					self::fail("$name::set$carrier() must throw rather than drop the data");
+				} catch (\RuntimeException) {
+				}
+				self::assertNull(
+					$class::fromString($file->toBinary())->{"get$carrier"}(),
+					"$name wrote $carrier despite refusing it",
+				);
+			}
+		}
+	}
+
+	/** A value of the kind the named carrier's setter takes. */
+	private function carrierValue(string $carrier): EXIF|IPTC|string
+	{
+		return match ($carrier) {
+			'EXIF' => $this->exif(),
+			'IPTC' => $this->iptc(),
+			'ICCProfile' => ICCProfileBuilder::sRgb(),
+		};
 	}
 
 	private function jpeg(): string
@@ -890,5 +937,77 @@ class ContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		$irb->setIPTC($this->iptc('Present'));
 		$fresh->setPhotoshopIRB($irb);
 		self::assertSame('Present', $fresh->getPhotoshopIRB()?->getIPTC()[IPTCTags::ObjectName]);
+	}
+
+	//
+	// ─── AVI ─────────────────────────────────────────────────────────────────
+	//
+
+	public function testAviCarriersRoundTrip()
+	{
+		$avi = AVIImage::fromString(ContainerFixtures::avi());
+		self::assertNull($avi->getXMP());
+		self::assertFalse($avi->hasXMP());
+
+		$avi->setXMP($this->xmp());
+		$round = AVIImage::fromString($avi->toBinary());
+		self::assertTrue($round->hasXMP());
+		self::assertSame('Container test', $round->getXMP()?->getLangAltValue(XMP::NS_DC, 'title'));
+
+		$round->setXMP(null);
+		self::assertNull(AVIImage::fromString($round->toBinary())->getXMP());
+	}
+
+	//
+	// ─── ISO BMFF ────────────────────────────────────────────────────────────
+	//
+
+	public function testBmffCarriersRoundTrip()
+	{
+		$profile = ICCProfileBuilder::sRgb();
+		$bmff = BMFFFile::fromString(ContainerFixtures::heif());
+		self::assertNull($bmff->getEXIF());
+		self::assertNull($bmff->getICCProfile());
+
+		$bmff->setEXIF($this->exif());
+		$bmff->setXMP($this->xmp());
+		$bmff->setICCProfile($profile);
+
+		$round = BMFFFile::fromString($bmff->toBinary());
+		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
+		self::assertSame('Container test', $round->getXMP()?->getLangAltValue(XMP::NS_DC, 'title'));
+		self::assertSame(bin2hex($profile), bin2hex((string) $round->getICCProfile()));
+		self::assertSame([true, true, true], [$round->hasEXIF(), $round->hasXMP(), $round->hasICCProfile()]);
+	}
+
+	public function testBmffCarriersAreRemovable()
+	{
+		$bmff = BMFFFile::fromString(ContainerFixtures::heif());
+		$bmff->setEXIF($this->exif());
+		$bmff->setICCProfile(ICCProfileBuilder::sRgb());
+		$bmff = BMFFFile::fromString($bmff->toBinary());
+
+		$bmff->setICCProfile(null);
+		$round = BMFFFile::fromString($bmff->toBinary());
+		self::assertNull($round->getICCProfile());
+		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
+	}
+
+	//
+	// ─── JPEG XL ─────────────────────────────────────────────────────────────
+	//
+
+	public function testJxlCarriersRoundTrip()
+	{
+		$jxl = JXLImage::fromString(ContainerFixtures::jxl());
+		self::assertSame([64, 48], [$jxl->getWidth(), $jxl->getHeight()]);
+
+		$jxl->setEXIF($this->exif());
+		$jxl->setXMP($this->xmp());
+
+		$round = JXLImage::fromString($jxl->toBinary());
+		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
+		self::assertSame('Container test', $round->getXMP()?->getLangAltValue(XMP::NS_DC, 'title'));
+		self::assertSame([64, 48], [$round->getWidth(), $round->getHeight()]);
 	}
 }
