@@ -1539,4 +1539,210 @@ class BMFFFileTest extends PHPUnit\Framework\TestCase
 		self::assertSame(strlen($bytes), $written);
 		fclose($target);
 	}
+
+	//
+	// ─── Table forms other writers emit ──────────────────────────────────────
+	//
+	// The default fixtures are shaped the way libheif writes a HEIC: version 0 tables with
+	// the item address in the `iloc` base offset.  The format allows more than that, and the
+	// readers and writers here claim to handle it, so these prove the claim.
+
+	/**
+	 * A still whose `iloc` has **no base offset field**, so the item address rides the extent
+	 * offset instead — the layout writers other than libheif produce.
+	 */
+	private function heifExtentAddressed(): string
+	{
+		$data = 'picture bytes';
+		$ftyp = $this->ftyp();
+		$build = fn (int $offset): string => $this->meta(
+			$this->iinf($this->infe(1, 'hvc1', 'image')),
+			// offset_size 4, length_size 4, base_offset_size 0.
+			$this->fullBox('iloc', chr(0x44) . chr(0x00) . pack('n', 1)
+				. pack('n', 1) . pack('n', 0) . pack('n', 1) . pack('N', $offset) . pack('N', strlen($data))),
+			$this->fullBox('pitm', pack('n', 1)),
+		);
+		return $ftyp . $build(strlen($ftyp) + strlen($build(0)) + 8) . $this->box('mdat', $data);
+	}
+
+	/**
+	 * A still using the wide table forms: a version 2 `iloc` (32-bit item ids, a construction
+	 * method and an extent index), a version 1 `iinf` (32-bit entry count), a version 1 `pitm`
+	 * (32-bit primary id), and a version 1 `iref` (32-bit reference ids).
+	 */
+	private function heifWideTables(): string
+	{
+		$data = 'picture bytes';
+		$ftyp = $this->ftyp();
+		$build = fn (int $base): string => $this->meta(
+			$this->fullBox('iinf', pack('N', 1) . $this->infe(1, 'hvc1', 'image'), 1),
+			// version 2: offset_size 4, length_size 4, base_offset_size 4, index_size 0.
+			$this->fullBox('iloc', chr(0x44) . chr(0x40) . pack('N', 1)
+				. pack('N', 1) . pack('n', 0) . pack('n', 0) . pack('N', $base)
+				. pack('n', 1) . pack('N', 0) . pack('N', strlen($data)), 2),
+			$this->fullBox('pitm', pack('N', 1), 1),
+			$this->box('iref', chr(1) . "\x00\x00\x00"),
+		);
+		return $ftyp . $build(strlen($ftyp) + strlen($build(0)) + 8) . $this->box('mdat', $data);
+	}
+
+	/** The picture item, whatever position it holds once other items are added. */
+	private function pictureItem(BMFFFile $bmff): BMFFItem
+	{
+		foreach ($bmff->getItems() as $item) {
+			if ($item->getType() === 'hvc1') {
+				return $item;
+			}
+		}
+		self::fail('the fixture has no picture item');
+	}
+
+	public function testAnItemAddressedByItsExtentOffsetShiftsCorrectly(): void
+	{
+		$bmff = BMFFFile::fromString($this->heifExtentAddressed());
+		self::assertSame('picture bytes', $bmff->getItemData($this->pictureItem($bmff)));
+
+		// Creating an item grows `meta`, so every location must move by exactly that much —
+		// here through the extent offset, since the table has no base offset to carry it.
+		$bmff->setEXIF($this->exif());
+		$round = BMFFFile::fromString($bmff->toBinary());
+		self::assertSame('picture bytes', $round->getItemData($this->pictureItem($round)), 'the picture still reads');
+		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
+	}
+
+	public function testTheWideTableFormsAreReadAndAppendedTo(): void
+	{
+		$bmff = BMFFFile::fromString($this->heifWideTables());
+		self::assertSame('picture bytes', $bmff->getItemData($this->pictureItem($bmff)));
+
+		$bmff->setEXIF($this->exif());
+		$bmff->setXmpText('<x:xmpmeta xmlns:x="adobe:ns:meta/"/>');
+		$round = BMFFFile::fromString($bmff->toBinary());
+
+		self::assertSame('picture bytes', $round->getItemData($this->pictureItem($round)), 'the picture still reads');
+		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
+		self::assertStringContainsString('xmpmeta', (string) $round->getXmpText());
+
+		// The appended entries keep the table in the version and widths it already used.
+		$iloc = (string) $round->getBox(BMFFFile::MetaBox)?->getChild(BMFFFile::ItemLocationBox)?->getPayload();
+		self::assertSame(2, ord($iloc[0]), 'the `iloc` stays version 2');
+		self::assertSame(3, (int) unpack('N', substr($iloc, 6, 4))[1], 'three located items');
+		$iinf = (string) $round->getBox(BMFFFile::MetaBox)?->getChild(BMFFFile::ItemInfoBox)?->getPayload();
+		self::assertSame(1, ord($iinf[0]), 'the `iinf` stays version 1');
+		self::assertSame(3, (int) unpack('N', substr($iinf, 4, 4))[1], 'three described items');
+	}
+
+	public function testAWideIrefGetsWideReferences(): void
+	{
+		$bmff = BMFFFile::fromString($this->heifWideTables());
+		$bmff->setEXIF($this->exif());
+		$round = BMFFFile::fromString($bmff->toBinary());
+
+		$iref = $round->getBox(BMFFFile::MetaBox)?->getChild(BMFFFile::ItemReferenceBox);
+		self::assertNotNull($iref);
+		$cdsc = $iref->getChildren()[0] ?? null;
+		self::assertNotNull($cdsc, 'the new item says which picture it describes');
+		// Version 1 ids are 32-bit: from item 2, one reference, to item 1.
+		self::assertSame(
+			bin2hex(pack('N', 2) . pack('n', 1) . pack('N', 1)),
+			bin2hex((string) $cdsc->getPayload()),
+		);
+	}
+
+	public function testTheSmallestSufficientFreeRunTakesTheBox(): void
+	{
+		// Two runs can hold the 60-byte box: 208 bytes with 148 to spare, and 68 with 8.
+		// Best fit takes the tighter one and leaves the larger run whole for a larger write.
+		$bytes = $this->ftyp('isom', 'isom', 'mp41')
+			. $this->box('mdat', str_repeat("\x11", 32))
+			. $this->box('free', str_repeat("\0", 200))
+			. $this->box('free', str_repeat("\0", 60))
+			. $this->box('moov', $this->box('mvhd', str_repeat("\0", 8)));
+		$bmff = BMFFFile::fromString($bytes);
+		$bmff->setXmpText(str_repeat('x', 36));
+		$out = $bmff->toBinary();
+
+		self::assertSame(strlen($bytes), strlen($out), 'the padding paid for it');
+		self::assertSame(
+			['ftyp', 'mdat', 'free', 'uuid', 'free', 'moov'],
+			array_map(fn ($b) => $b->getType(), BMFFFile::fromString($out)->getBoxes()),
+			'the second, tighter run took the box and the larger one is untouched',
+		);
+		self::assertSame(208, strlen(BMFFFile::fromString($out)->getBoxes()[2]->toBinary()), 'the larger run is whole');
+		self::assertSame(str_repeat('x', 36), BMFFFile::fromString($out)->getXmpText());
+	}
+
+	public function testAUserDataValueOfTheSameLengthResizesNothing(): void
+	{
+		$bytes = $this->movieWithUserData($this->atom(BMFFFile::KeyTitle, 'AAAA'));
+		$bmff = BMFFFile::fromString($bytes);
+		$bmff->setUserDataValue(BMFFFile::KeyTitle, 'BBBB');
+		$out = $bmff->toBinary();
+
+		self::assertSame(strlen($bytes), strlen($out), 'a same-length value changes no box length');
+		self::assertSame(strpos($bytes, 'mdat'), strpos($out, 'mdat'));
+		self::assertSame('BBBB', BMFFFile::fromString($out)->getUserDataValue(BMFFFile::KeyTitle));
+	}
+
+	public function testRemovingAProfileThatIsNotTheFirstPropertyKeepsTheRest(): void
+	{
+		$bytes = $this->heifWithProperties([
+			$this->fullBox('ispe', pack('NN', 6, 4)),
+			$this->colr(BMFFFile::ColourTypeProfile, 'gone'),
+		]);
+		$bmff = BMFFFile::fromString($bytes);
+		self::assertSame('gone', $bmff->getICCProfile());
+
+		$bmff->setICCProfile(null);
+		$out = $bmff->toBinary();
+		$round = BMFFFile::fromString($out);
+
+		self::assertNull($round->getICCProfile());
+		self::assertSame(strlen($bytes), strlen($out), 'padding replaced the profile, so nothing moved');
+		self::assertSame('item bytes', $round->getItemData($round->getItems()[0]), 'the picture still reads');
+		// The property that came first keeps its index, so no association had to be renumbered.
+		$ipco = $round->getBox(BMFFFile::MetaBox)?->getChild('iprp')?->getChild('ipco');
+		self::assertSame(['ispe', 'free'], array_map(fn ($p) => $p->getType(), $ipco?->getChildren() ?? []));
+	}
+
+	public function testAnItemInfoEntryWithNoPayloadReadsAsAbsent(): void
+	{
+		$data = 'picture bytes';
+		$ftyp = $this->ftyp();
+		$build = fn (int $base): string => $this->meta(
+			$this->iinf($this->infe(1, 'hvc1', 'image'), $this->box('infe', '')),
+			$this->iloc([[1, $base, 0, strlen($data)]]),
+			$this->fullBox('pitm', pack('n', 1)),
+		);
+		$bytes = $ftyp . $build(strlen($ftyp) + strlen($build(0)) + 8) . $this->box('mdat', $data);
+
+		$items = BMFFFile::fromString($bytes)->getItems();
+		self::assertCount(1, $items, 'the empty entry is skipped, the real one is not');
+		self::assertSame('hvc1', $items[0]->getType());
+	}
+
+	public function testAnItemAddedToATruncatedItemInfoTableGetsAValidOne(): void
+	{
+		// An `iinf` too short to hold its own version and entry count has no count to bump;
+		// the new table states the one entry it now describes rather than staying broken.
+		$data = 'picture bytes';
+		$ftyp = $this->ftyp();
+		$build = fn (int $base): string => $this->meta(
+			$this->box('iinf', ''),
+			$this->iloc([[1, $base, 0, strlen($data)]]),
+			$this->fullBox('pitm', pack('n', 1)),
+		);
+		$bytes = $ftyp . $build(strlen($ftyp) + strlen($build(0)) + 8) . $this->box('mdat', $data);
+
+		$bmff = BMFFFile::fromString($bytes);
+		self::assertSame([], $bmff->getItems(), 'nothing is described yet');
+
+		$bmff->setEXIF($this->exif());
+		$round = BMFFFile::fromString($bmff->toBinary());
+
+		$iinf = (string) $round->getBox(BMFFFile::MetaBox)?->getChild(BMFFFile::ItemInfoBox)?->getPayload();
+		self::assertSame(0, ord($iinf[0]), 'a fresh version 0 table');
+		self::assertSame(1, (int) unpack('n', substr($iinf, 4, 2))[1], 'naming its one entry');
+		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
+	}
 }

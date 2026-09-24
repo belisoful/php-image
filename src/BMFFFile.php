@@ -1663,13 +1663,15 @@ class BMFFFile extends ImageFile
 			$meta->addChild(new BMFFFileBox(self::ItemInfoBox, chr(0) . "\x00\x00\x00" . pack('n', 1) . $entry));
 			return;
 		}
-		$payload = $iinf->getPayload();
-		$version = strlen($payload) > 0 ? ord($payload[0]) : 0;
+		// A table too short to hold its version and count is padded out rather than special
+		// cased, so a truncated `iinf` is appended to as a valid one rather than kept broken.
+		$payload = str_pad($iinf->getPayload(), 4, "\0");
+		$version = ord($payload[0]);
 		$width = $version === 0 ? 2 : 4;
 		$at = 4;
 		$count = $this->readField($payload, $at, $width);
 		$counted = $version === 0 ? pack('n', $count + 1) : pack('N', $count + 1);
-		$iinf->setPayload(substr_replace($payload, $counted, 4, $width) . $entry);
+		$iinf->setPayload(substr_replace(str_pad($payload, 4 + $width, "\0"), $counted, 4, $width) . $entry);
 	}
 
 	/**

@@ -739,4 +739,31 @@ class AVIImageTest extends PHPUnit\Framework\TestCase
 		self::assertCount(1, $riff->getChunks());
 		self::assertSame('keep', $riff->getChunks()[0]->getData());
 	}
+
+	public function testTheSmallestSufficientPaddingRunTakesTheChunk(): void
+	{
+		// Two runs can hold the 20-byte chunk: 208 bytes with 188 to spare, and 28 with 8.
+		// Best fit takes the tighter one, leaving the larger run whole for a larger write.
+		$bytes = $this->avi(
+			$this->chunk(RIFFChunkType::Junk, str_repeat("\0", 200)),
+			$this->chunk(RIFFChunkType::Junk, str_repeat("\0", 20)),
+		);
+		$avi = AVIImage::fromString($bytes);
+		self::assertFalse($avi->getCanRearrange());
+
+		$avi->setXmpText('<x:xmpmeta/>');
+		$out = $avi->toBinary();
+
+		self::assertSame(strlen($bytes), strlen($out), 'the padding paid for it');
+		self::assertSame($this->moviOffset($bytes), $this->moviOffset($out));
+		self::assertSame('<x:xmpmeta/>', AVIImage::fromString($out)->getXmpText());
+
+		$chunks = AVIImage::fromString($out)->getRIFF()->getChunks();
+		self::assertSame(
+			['LIST', RIFFChunkType::Junk, RIFFChunkType::XmpRiff, RIFFChunkType::Junk, 'LIST', RIFFChunkType::Index],
+			array_map(fn ($c) => $c->getType(), $chunks),
+			'the second, tighter run took the chunk',
+		);
+		self::assertSame(200, $chunks[1]->getSize(), 'the larger run is untouched');
+	}
 }

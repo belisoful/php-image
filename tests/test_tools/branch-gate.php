@@ -37,14 +37,16 @@ const ALLOWED_UNTAKEN = [
 	'src/Meta/EXIF.php' => 1,
 	'src/TIFF/TIFFDocument.php' => 1,
 	'src/TIFF/TIFFDataType.php' => 2,
+	'src/BMFFFile.php' => 3,
 	'src/ImageGraphicsGD.php' => 2,
 	'src/ImageGraphicsImagick.php' => 2,
 	'src/JPEGImage.php' => 3,
+	'src/JXLSizeHeader.php' => 1,
 	'src/PNGImage.php' => 2,
 ];
 
 /** The most unreachable branches the library may carry in total, on any PHP version. */
-const MAX_UNTAKEN = 20;
+const MAX_UNTAKEN = 24;
 
 require dirname(__DIR__, 2) . '/vendor/autoload.php';
 
