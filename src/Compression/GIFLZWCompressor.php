@@ -187,12 +187,12 @@ class GIFLZWCompressor implements CompressorInterface
 	/**
 	 * Validates a GIF minimum code size.
 	 * @param int $minCodeSize The minimum code size to check.
-	 * @throws \InvalidArgumentException When it is outside 2..8.
+	 * @throws \UnexpectedValueException When it is outside 2..8.
 	 */
 	private static function assertMinCodeSize(int $minCodeSize): void
 	{
 		if ($minCodeSize < self::MinMinCodeSize || $minCodeSize > self::MaxMinCodeSize) {
-			throw new \RuntimeException(sprintf('GIF LZW minimum code size \'%s\' must be between 2 and 8.', $minCodeSize));
+			throw new \UnexpectedValueException(sprintf('GIF LZW minimum code size \'%s\' must be between 2 and 8.', $minCodeSize));
 		}
 	}
 
