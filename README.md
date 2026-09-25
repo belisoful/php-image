@@ -563,7 +563,7 @@ XDEBUG_MODE=coverage vendor/bin/phpunit --testsuite unit --coverage-clover build
 php tests/test_tools/coverage-gate.php build/logs/clover.xml
 ```
 
-**Branches** (99.67%) are checked on pull requests and on main rather than on every push,
+**Branches** (99.70%) are checked on pull requests and on main rather than on every push,
 because instrumenting every branch takes far longer than the suite itself. It is the stronger measure: a covered line still hides a
 decision that only ever goes one way. The nineteen branches that remain are unreachable by
 construction — mostly edges PHP emits itself, such as the implicit `UnhandledMatchError` of a

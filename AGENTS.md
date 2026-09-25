@@ -98,38 +98,39 @@
   reported uncovered there but covered locally, believe CI and write the test that actually
   exercises the branch. Do not chase it by weakening the gate.
 - Coverage is gated at two depths and both are expected to hold. **Lines: 99.91%** —
-  `tests/test_tools/coverage-gate.php`, run on every push. **Branches: 99.69%** —
-  `tests/test_tools/branch-gate.php`, run by the `branches` job of `.github/workflows/php-image.yml` on pull requests and main,
-  because a `--path-coverage` run takes far longer than the suite itself. Branch coverage is
-  the stronger measure: it catches a decision that only ever goes one way, which a covered
-  line hides. The branch job runs against **`phpunit-branch.xml`**, which holds `src/Stream`
-  and `src/Util` out of the path-coverage scope — path coverage records every distinct path
-  through a function, and the codecs call `BitReader::readBits()`, `BitWriter::writeBits()`,
-  and `Stream::read()`/`write()` tens of thousands of times per test, so including them makes
-  the run combinatorial. Measured: `LZWCompressorTest` alone takes 24 s out of scope and over
-  four minutes in; the whole suite had not finished after two and a half hours in scope, and
-  out of scope lands near the 4131 s the equivalent run takes on the pre-port repository,
-  where these classes were framework code and never in `src` at all. They remain in the line
-  gate and under PHPStan level 4, which reports the never-flipping condition branch coverage
-  is for. Do not widen that scope without re-measuring the runtime first. Every one of the 24 remaining untaken branches is unreachable by construction,
-  and most are not code anyone wrote — PHP emits an implicit `UnhandledMatchError` edge for a
-  `match` behind a range guard, an implicit `return null` after a `while (true)` that only
-  exits by return or throw, an implicit `default` for a `switch` over a validated private
-  field, and an implicit rethrow for a multi-catch whose `try` can only raise the listed
-  types. The rest are guards made redundant by an identical earlier check. Do not chase them.
-  Four are worth naming, because they look testable and are not. `BMFFFile::rewriteMovie()` and `BMFFFile::resizeMeta()`
-  each recompute a box after running an edit, and the `null` arm of that recomputation cannot
-  be taken: no edit either of them runs removes the `moov` or `meta` box it just measured, but
-  the accessor returns a nullable box, so the arm has to be written. `BMFFFile::removeColourInPlace()`
-  falls out of its loop without finding the property, which its one caller found in that same
-  list a moment earlier. `JXLSizeHeader::readSmallDimension()` returns null when the bits run
-  out, which they cannot: the codestream buffer is always a whole number of bytes, so any
-  prefix short enough to starve that five-bit read fails at the one-bit `small` flag or the
-  three-bit ratio first.
-  The gate's per-file figures are **maximums with a total cap**, not exact counts: the
-  compiler emits these edges, so which site carries one moves between PHP versions — PHP 8.1
-  reports the dead multi-catch rethrow in `TIFFDocument::scanIfd()` and PHP 8.3 the identical
-  one in `EXIF::scanStream()`. A file under its maximum is reported, not failed.
+  `tests/test_tools/coverage-gate.php`, run on every push. **Branches: 99.70%** —
+  `tests/test_tools/branch-gate.php`, run by the `branches` job of
+  `.github/workflows/php-image.yml` on pull requests and main, because a `--path-coverage` run
+  takes far longer than the suite itself. Branch coverage is the stronger measure: it catches a
+  decision that only ever goes one way, which a covered line hides. The branch job runs against
+  **`phpunit-branch.xml`**, which holds `src/Stream` and `src/Util` out of the path-coverage
+  scope — path coverage records every distinct path through a function, and the codecs call
+  `BitReader::readBits()`, `BitWriter::writeBits()`, and `Stream::read()`/`write()` tens of
+  thousands of times per test, so including them makes the run combinatorial. Measured:
+  `LZWCompressorTest` alone takes 24 s out of scope and over four minutes in; the whole suite
+  had not finished after two and a half hours in scope, and out of scope lands near the 4131 s
+  the equivalent run takes on the pre-port repository, where these classes were framework code
+  and never in `src` at all. They remain in the line gate and under PHPStan level 4, which
+  reports the never-flipping condition branch coverage is for. Do not widen that scope without
+  re-measuring the runtime first. Every one of the remaining untaken branches — 22 at last
+  measure, capped at 24 — is unreachable by construction, and most are not code anyone wrote —
+  PHP emits an implicit `UnhandledMatchError` edge for a `match` behind a range guard, an
+  implicit `return null` after a `while (true)` that only exits by return or throw, an implicit
+  `default` for a `switch` over a validated private field, and an implicit rethrow for a
+  multi-catch whose `try` can only raise the listed types. The rest are guards made redundant
+  by an identical earlier check. Do not chase them. Four are worth naming, because they look
+  testable and are not. `BMFFFile::rewriteMovie()` and `BMFFFile::resizeMeta()` each recompute
+  a box after running an edit, and the `null` arm of that recomputation cannot be taken: no
+  edit either of them runs removes the `moov` or `meta` box it just measured, but the accessor
+  returns a nullable box, so the arm has to be written. `BMFFFile::removeColourInPlace()` falls
+  out of its loop without finding the property, which its one caller found in that same list a
+  moment earlier. `JXLSizeHeader::readSmallDimension()` returns null when the bits run out,
+  which they cannot: the codestream buffer is always a whole number of bytes, so any prefix
+  short enough to starve that five-bit read fails at the one-bit `small` flag or the three-bit
+  ratio first. The gate's per-file figures are **maximums with a total cap**, not exact counts:
+  the compiler emits these edges, so which site carries one moves between PHP versions — PHP
+  8.1 reports the dead multi-catch rethrow in `TIFFDocument::scanIfd()` and PHP 8.3 the
+  identical one in `EXIF::scanStream()`. A file under its maximum is reported, not failed.
 - Line coverage of `src` is **99.91%** and is expected to stay there: a change that adds
   an uncovered line is a change that needs a test.  Exactly seven lines are knowingly
   unreachable from a test, and each is unreachable for a stated reason — do not "cover"
