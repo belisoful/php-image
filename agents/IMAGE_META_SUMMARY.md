@@ -488,6 +488,26 @@ Each family offers `Main_Heading`, `Table`, `Table_Row`, `Caption_Cell`, `Value_
 - **1.11** — Embedded XMP/IRB inside EXIF (TIFF); portable thumbnail links (`pjmt_utils.php`); `unpack_/pack_Photoshop_IRB_Data` split; `HIDE_UNKNOWN_TAGS` covers IRB; `Toolkit_Version.php` added; http/ftp rejection; GPS/ZIP/LZW tag fixes; `get_ps_thumb.php` TIFF support
 - **1.12** — (no entry in changes.html; version bump in `Toolkit_Version.php`)
 
-## 20. Planned / TODO (from `documentation/todo.html`)
+## 20. Planned / TODO (inherited from `documentation/todo.html`)
 
-More makernote specs · PIM tag definitions · Photoshop CS format spec + unknown IRB resources (1061/1062/1064) · `adobe-xap-filters` meaning · full EXIF-write testing · HTTP/FTP EXIF support · new decoders (Adobe "Ducky" segment, Apple plist, ICC profiles) · EXIF field decoders (DeviceSettings, SpatialFrequencyResponse, UserComment, OECF, SubjectArea) · Float/Double types · IPTC extended datasets · JFIF/JFXX thumbnail decoding · UTF-16 testing.
+This list is the **upstream project's** todo page, kept as a record of what that project intended. It is not this library's backlog, and most of it has since been implemented here. Statuses below were checked against the source on 2026-09-26.
+
+**Done here**
+
+- ICC profiles — read-write through `ICCProfile`, with a pure-PHP matrix/TRC transform beside it.
+- JFIF/JFXX thumbnail decoding — both carriers, read and written.
+- IPTC extended datasets — 115 datasets defined in `IPTCTags`.
+- Float and Double types — all twelve TIFF data types are in `TIFFDataType`.
+- UTF-16 — the `mluc` codec in `ICCProfile`, the EXIF `UNICODE` charset form, and Photoshop's Unicode resources; no ext-mbstring required.
+- `UserComment` — the eight-byte charset signature form is both encoded and decoded.
+- Full EXIF-write testing — rewriting is covered end to end, including the invariant that pins a parsed makernote at its original offset.
+
+**Still open**
+
+- More makernote specs. Thirteen makers decode; `MakernoteTables` is as complete as the public documentation supports.
+- PrintIM tag definitions. `PrintIM` parses the tag and value entries but names none of them.
+- Photoshop CS resource formats, and IRB resources 1061, 1062 and 1064, which `PhotoshopResourceNames` does not name.
+- What `adobe-xap-filters` meant. Nothing in the public XMP documentation accounts for it.
+- Structured decoders for `DeviceSettingDescription`, `SpatialFrequencyResponse`, `OECF` and `SubjectArea`. They round-trip as typed values but are not interpreted.
+- Decoders for the Adobe "Ducky" APP12 variant and Apple's plist segment.
+- Fetching over HTTP/FTP. Out of scope by design: every reader takes a PSR-7 stream or a resource, so a caller wanting a URL opens it themselves.
