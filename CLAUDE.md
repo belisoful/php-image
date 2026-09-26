@@ -22,7 +22,7 @@ A standalone PHP library providing image container readers, metadata editing, an
 
 ## Version
 
-- **Current version: v1.1.0** — the AVI, ISO BMFF and JPEG XL containers over the v1.0.0 initial release. The number is the same in the sibling repository; only a sub-fix component may diverge.
+- **Current version: v0.2.0** — the AVI, ISO BMFF and JPEG XL containers over v0.1.0. The number is the same in the sibling repository; only a sub-fix component may diverge. Still 0.x on purpose: the API is not frozen, which is what the pre-release note in Key facts means.
 - Source docblocks carry **no `@since` tags** — do not add them. Availability is recorded here and in the release history, not per symbol.
 
 ## Key facts

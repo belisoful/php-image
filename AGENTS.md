@@ -46,7 +46,7 @@
   - Examples, where necessary
   - `@author` for attribution
 - Inline comments should be in English and start with `//`
-- Do NOT add `@since` tags: this library does not track availability per symbol. Everything but the AVI, ISO BMFF and JPEG XL containers shipped in v1.0.0, and those arrived in v1.1.0, which the version note below records instead.
+- Do NOT add `@since` tags: this library does not track availability per symbol. Everything but the AVI, ISO BMFF and JPEG XL containers shipped in v0.1.0, and those arrived in v0.2.0, which the version note below records instead.
 - All documentation should be written in present perfect tense
 
 ### Error Handling
@@ -68,7 +68,7 @@
 - This is a new, pre-release library with no published API to preserve, so backward compatibility is NOT a constraint; prefer the better design over a compatible one
 - A full check consists of the 4 checks (in order): `php -l` compile, php-cs-fixer, phpstan, phpunit (all checks must pass successfully)
 - A full check must be done for code to be ready for git commit.
-- The current version of this library is **v1.1.0**, which adds the AVI, ISO BMFF and JPEG XL containers to the v1.0.0 initial release. It requires PHP 8.1+ and `psr/http-message` only. Source docblocks carry no `@since` tags, and the version is the same in the sibling repository apart from a sub-fix component.
+- The current version of this library is **v0.2.0**, which adds the AVI, ISO BMFF and JPEG XL containers to v0.1.0. It requires PHP 8.1+ and `psr/http-message` only. Source docblocks carry no `@since` tags, and the version is the same in the sibling repository apart from a sub-fix component. The `major.minor.patch` prefix tracks the git tag, which is what Composer and Packagist read; `composer.json` carries no `version` field.
 - Classes live under `Belisoful\Image\`, `Belisoful\Image\TIFF\`, `Belisoful\Image\GIF\`, `Belisoful\Image\PNG\`, `Belisoful\Image\ICC\`, `Belisoful\Image\Meta\`, `Belisoful\Image\Meta\Makernote\`, `Belisoful\Image\Compression\`, and the infrastructure namespaces `Belisoful\Image\Stream\` and `Belisoful\Image\Util\` (PSR-4 `Belisoful\Image\` → `src/`).
 - The tag knowledge bases (`EXIFTags`, `MakernoteTags`, `MakernoteTables`, `PhotoshopResourceNames`) are fact tables from the public specs; keep them complete and factual when extending.
 - EXIF rewrites must keep the makernote pinned at its original offset (the `TIFFTag::setPreserveOffset()` invariant). The pin predicate lives in **one** place — `TIFFDocument::isPinned()` — which both `collectPins()` (the compose reservation) and `layoutIfd()` (the actual placement) call, so the reserved-space list can never drift from what the writer pins; do not re-inline that condition. `EXIF`/`TIFFImage` surface those ranges as `getReservedSpaces()`, with `getFreeSpaces()` as the complement over the composed length, so a caller windows the bytes itself; the library ships no stream decorator for this. TIFF files are read-write: keep the `TIFFTag::setExternalData()` strip/tile capture-and-relocate mechanism (and its offsets/byte-counts pairing) intact on any writer change.
