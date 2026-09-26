@@ -130,7 +130,9 @@
   ratio first. The gate's per-file figures are **maximums with a total cap**, not exact counts:
   the compiler emits these edges, so which site carries one moves between PHP versions — PHP
   8.1 reports the dead multi-catch rethrow in `TIFFDocument::scanIfd()` and PHP 8.3 the
-  identical one in `EXIF::scanStream()`. A file under its maximum is reported, not failed.
+  identical one in `EXIF::scanStream()`. A file under its maximum is reported, not failed. When
+  you do have to chase one, the filtered `--path-coverage` recipe in CLAUDE.md finds them in
+  seconds rather than the hour the full run takes.
 - Line coverage of `src` is **99.91%** and is expected to stay there: a change that adds
   an uncovered line is a change that needs a test.  Exactly seven lines are knowingly
   unreachable from a test, and each is unreachable for a stated reason — do not "cover"

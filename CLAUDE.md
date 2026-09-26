@@ -83,6 +83,23 @@ XDEBUG_MODE=coverage php -d memory_limit=10G vendor/bin/phpunit -c phpunit-branc
 php -d memory_limit=8G tests/test_tools/branch-gate.php build/logs/coverage.php
 ```
 
+To chase one untaken branch you do not need that hour. Filter the same run to the test classes
+that touch the file and read the per-file line out of the gate — seconds instead, and it
+reproduces exactly what CI reports for that file:
+
+```sh
+XDEBUG_MODE=coverage php -d memory_limit=6G vendor/bin/phpunit --testsuite unit \
+    --filter '(BMFFFileTest|ContainerReadWriteTest|PrivacyScrubTest)' \
+    --path-coverage --coverage-php build/logs/filtered.php
+php tests/test_tools/branch-gate.php build/logs/filtered.php
+```
+
+Two things make that reading safe. The filter must name **every** test class that exercises the
+file, or the ones left out show as untaken branches that are in fact covered — a too-narrow
+filter invents work. And the report's total, its notes and its pass/fail mean nothing here,
+because every file the filter skipped counts as wholly untaken; read only the line naming the
+file you are working on. CI stays the authority for the gate itself.
+
 It uses **`phpunit-branch.xml`**, not `phpunit.xml`: that config holds `src/Stream` and
 `src/Util` out of the path-coverage scope, because path coverage records every distinct path
 through a function and `BitReader::readBits()`, `BitWriter::writeBits()`, and `Stream::read()`/
