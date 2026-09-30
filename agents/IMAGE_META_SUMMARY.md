@@ -1,5 +1,7 @@
 # PHP JPEG Metadata Toolkit — Complete Feature Summary
 
+> **Sections 1–19 describe the upstream PHP JPEG Metadata Toolkit v1.12, not this library.** Their ❌ marks and limitations are that toolkit's; §20 records which of them this library has since implemented.
+
 | | |
 |---|---|
 | **Library** | PHP JPEG Metadata Toolkit |
@@ -97,6 +99,8 @@ The toolkit reads and writes image **metadata containers**; it never decodes or 
 `get_TIFF_Packed_Data`, `get_IFD_Array_Packed_Data`, `get_IFD_Packed_Data`, `process_TIFF_Header`, `read_Multiple_IFDs( …, $local_offsets = FALSE, $read_next_ptr = TRUE )`, `read_IFD_universal`, `get_Tag_Text_Value`, `get_Special_Tag_Text_Value`, `interpret_IFD`, `get_IFD_Data_Type`, `put_IFD_Data_Type`, `get_IFD_value_as_text`.
 
 ### TIFF data types (1–12) supported
+Upstream's support. This library reads and writes all twelve, Float and Double included (§20).
+
 | # | Type | Read | Write |
 |---|---|:---:|:---:|
 | 1 | Unsigned Byte | ✅ | ✅ |
@@ -467,6 +471,8 @@ Each family offers `Main_Heading`, `Table`, `Table_Row`, `Caption_Cell`, `Value_
 ---
 
 ## 18. Documented Limitations & Warnings
+
+The upstream toolkit's limitations, as it documents them. Several no longer hold here: see §20 and CLAUDE.md.
 
 1. **EXIF/Meta reads require local files** — http/ftp wrappers are explicitly rejected (workaround: `copy()` to a temp file first).
 2. **`put_EXIF_JPEG` / `put_Meta_JPEG` can damage makernotes** containing external pointers (e.g. embedded thumbnails) — makernote-aware re-offsetting is not implemented.

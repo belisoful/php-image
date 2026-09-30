@@ -1438,7 +1438,8 @@ class EXIFTags
 	}
 
 	/**
-	 * Renders a numeric value set: integers joined, rationals simplified to quotients.
+	 * Renders a numeric value set: integers joined, rationals simplified to quotients,
+	 * and single-precision floats at the fewest digits that read back as the stored value.
 	 * @param TIFFTag $tag The tag.
 	 * @return ?string The text, or null for a non-numeric value set.
 	 */
@@ -1459,11 +1460,33 @@ class EXIFTags
 				} else {
 					$parts[] = rtrim(rtrim(number_format($quotient, 4, '.', ''), '0'), '.');
 				}
+			} elseif ($tag->getType() === TIFFDataType::Float) {
+				$parts[] = self::floatText($value);
 			} else {
 				$parts[] = (string) $value;
 			}
 		}
 		return implode(', ', $parts);
+	}
+
+	/**
+	 * Renders a single-precision value as the shortest decimal that packs to the same
+	 * four bytes.  Widened to PHP's double, a stored 0.1 is 0.10000000149011612; printing
+	 * that reports the widening, not the file.  The bytes are compared rather than the
+	 * numbers so a value set but not yet stored renders as it will be written.
+	 * @param float $value The Float value.
+	 * @return string The text.
+	 */
+	protected static function floatText(float $value): string
+	{
+		$stored = \pack('g', $value);
+		for ($digits = 1; $digits < 9; $digits++) {
+			$text = sprintf('%.' . $digits . 'G', $value);
+			if (\pack('g', (float) $text) === $stored) {
+				return $text;
+			}
+		}
+		return sprintf('%.9G', $value);   // nine significant digits always suffice
 	}
 
 	/**

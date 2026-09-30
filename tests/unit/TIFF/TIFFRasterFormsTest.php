@@ -65,11 +65,13 @@ class TIFFRasterFormsTest extends PHPUnit\Framework\TestCase
 	 * @param int $offsetsTag The offsets tag (273 strips or 324 tiles).
 	 * @param array $blocks The block payloads.
 	 * @param int $countsTag
+	 * @param bool $bigEndian The document byte order, big-endian (MM) by default.
 	 */
-	private function buildTiff(array $tags, int $offsetsTag, array $blocks, int $countsTag): string
+	private function buildTiff(array $tags, int $offsetsTag, array $blocks, int $countsTag, bool $bigEndian = true): string
 	{
 		$exif = new EXIF();
 		$exif->setSignature('');
+		$exif->getTiff()->setIsBigEndian($bigEndian);
 		$ifd = $exif->getIfd0();
 		foreach ($tags as $id => [$type, $values]) {
 			$ifd->setTagValues($id, $type, $values);
@@ -99,6 +101,54 @@ class TIFFRasterFormsTest extends PHPUnit\Framework\TestCase
 		$ifd->setTagValues($offsetsTag, TIFFDataType::ULong, [8, 8]);   // two offsets ...
 		$ifd->setTagValues($countsTag, TIFFDataType::ULong, [4]);       // ... but one byte count
 		return $exif->toBinary();
+	}
+
+	/**
+	 * Decodes a one-row grayscale raster and returns each pixel's grey level in hex.
+	 * @param int $bits The bits per sample.
+	 * @param string $data The strip bytes, whose length sets the width.
+	 * @param array $extra Tags to add or override, id => [type, values].
+	 * @param bool $bigEndian The document byte order.
+	 * @return false|string The grey levels as hex, or false when the raster is refused.
+	 */
+	private function greyRow(int $bits, string $data, array $extra = [], bool $bigEndian = true): false|string
+	{
+		$width = intdiv(strlen($data) * 8, $bits);
+		$tags = $extra + $this->baseTags($width, 1, TIFFRaster::BlackIsZero, [$bits], 1);
+		$image = TIFFImage::fromString($this->buildTiff($tags, 273, [$data], 279, $bigEndian))->getImage();
+		if ($image === false) {
+			return false;
+		}
+		$rgb = ImageGraphics::rgbPixels($image);
+		$grey = '';
+		for ($i = 0; $i < $width; $i++) {
+			$grey .= $rgb[$i * 3];
+		}
+		return bin2hex($grey);
+	}
+
+	/**
+	 * Applies the floating-point predictor the way a writer does: each row's big-endian
+	 * samples split into byte planes, most significant first, then differenced bytewise
+	 * across the pixel.
+	 * @param string $samples The big-endian samples of one row.
+	 * @param int $bytes The bytes per sample.
+	 * @param int $stride The samples per pixel.
+	 * @return string The predicted row.
+	 */
+	private static function floatPredict(string $samples, int $bytes, int $stride): string
+	{
+		$count = intdiv(strlen($samples), $bytes);
+		$planes = '';
+		for ($plane = 0; $plane < $bytes; $plane++) {
+			for ($i = 0; $i < $count; $i++) {
+				$planes .= $samples[$i * $bytes + $plane];
+			}
+		}
+		for ($i = strlen($planes) - 1; $i >= $stride; $i--) {
+			$planes[$i] = chr((ord($planes[$i]) - ord($planes[$i - $stride])) & 0xFF);
+		}
+		return $planes;
 	}
 
 	private function baseTags(int $width, int $height, int $photometric, array $bits, int $samples): array
@@ -208,7 +258,7 @@ class TIFFRasterFormsTest extends PHPUnit\Framework\TestCase
 		$packed = implode('', array_map(fn (string $byte) => chr(bindec($byte)), str_split($bits, 8)));
 		$expected = implode('', array_map(fn (string $bit) => chr((int) $bit), str_split($bits)));
 		$encoded = (new CCITTFaxCompressor(64, CCITTFaxCompressor::Group3TwoD))->encode($packed);
-		$geometry = ['bits' => 1, 'compression' => TIFFImage::CompressionGroup3, 'fillOrder' => 1, 'predictor' => 1];
+		$geometry = ['bits' => 1, 'format' => TIFFRaster::FormatUnsigned, 'bigEndian' => true, 'compression' => TIFFImage::CompressionGroup3, 'fillOrder' => 1, 'predictor' => 1];
 
 		// T4Options bit 0 selects the two-dimensional coding, which decodes the rows.
 		$decoded = TTIFFRasterDecodeProbe::decodeOneBlock($encoded, ['t4options' => 1] + $geometry, 64, 4, 1);
@@ -465,6 +515,17 @@ class TIFFRasterFormsTest extends PHPUnit\Framework\TestCase
 		self::assertSame(str_repeat("\x00", 2 * 2 * 3), $rgb);
 	}
 
+	public function testSubsampledYCbCrHonoursTheFillOrder()
+	{
+		// White and black luma under neutral chroma, each byte bit-mirrored: 0x80 is 0x01.
+		$tags = $this->baseTags(2, 2, TIFFRaster::YCbCr, [8, 8, 8], 3);
+		$tags[530] = [TIFFDataType::UShort, [2, 2]];
+		$tags[266] = [TIFFDataType::UShort, [2]];
+		$rgb = ImageGraphics::rgbPixels(TIFFImage::fromString($this->buildTiff($tags, 273, ["\xFF\xFF\x00\x00\x01\x01"], 279))->getImage());
+		self::assertSame('ffffff', bin2hex(substr($rgb, 0, 3)));
+		self::assertSame('000000', bin2hex(substr($rgb, 6, 3)));
+	}
+
 	public function testSubsampledYCbCrUnsupportedFormsAnswerFalse()
 	{
 		$subsampled = function (array $subsampling, array $overrides = []): array {
@@ -484,6 +545,12 @@ class TIFFRasterFormsTest extends PHPUnit\Framework\TestCase
 
 		// A compression the subsampled path does not decode.
 		$tags = $subsampled([2, 2], [259 => [TIFFDataType::UShort, [TIFFImage::CompressionGroup3]]]);
+		self::assertFalse(TIFFImage::fromString($this->buildTiff($tags, 273, [$unit], 279))->getImage());
+
+		// The unit layout is defined for plain unsigned bytes: no other format, no predictor.
+		$tags = $subsampled([2, 2], [339 => [TIFFDataType::UShort, [2, 2, 2]]]);
+		self::assertFalse(TIFFImage::fromString($this->buildTiff($tags, 273, [$unit], 279))->getImage());
+		$tags = $subsampled([2, 2], [317 => [TIFFDataType::UShort, [2]]]);
 		self::assertFalse(TIFFImage::fromString($this->buildTiff($tags, 273, [$unit], 279))->getImage());
 
 		// No strip data at all.
@@ -514,6 +581,182 @@ class TIFFRasterFormsTest extends PHPUnit\Framework\TestCase
 		$tags = $this->baseTags(2, 1, TIFFRaster::Rgb, [8, 8, 8], 3);
 		$tags[259] = [TIFFDataType::UShort, [TIFFImage::CompressionGroup4]];
 		self::assertFalse(TIFFImage::fromString($this->buildTiff($tags, 273, ["\x00"], 279))->getImage());
+	}
+
+	public function testWideSamplesAreReadInTheDocumentsByteOrder()
+	{
+		// The most significant byte is first in a big-endian file and last in a little-endian
+		// one; reading the first byte of either is right only half the time.
+		foreach ([true, false] as $bigEndian) {
+			[$short, $long] = $bigEndian ? ['n*', 'N*'] : ['v*', 'V*'];
+			$order = $bigEndian ? 'MM' : 'II';
+			self::assertSame('ff8000', $this->greyRow(16, pack($short, 0xFF00, 0x8000, 0x00FF), [], $bigEndian), "16-bit $order");
+			self::assertSame('ff8000', $this->greyRow(32, pack($long, 0xFF000000, 0x80000000, 0x00FFFFFF), [], $bigEndian), "32-bit $order");
+
+			// The "undefined" format is read as unsigned, as the specification directs.
+			$undefined = [339 => [TIFFDataType::UShort, [TIFFRaster::FormatUndefined]]];
+			self::assertSame('ff8000', $this->greyRow(16, pack($short, 0xFF00, 0x8000, 0x00FF), $undefined, $bigEndian), "undefined $order");
+		}
+	}
+
+	public function testSignedSamplesAreOffsetSoTheMostNegativeIsBlack()
+	{
+		// Read as unsigned, -128 (0x80) would be mid-grey and -1 (0xFF) white.
+		$signed = [339 => [TIFFDataType::UShort, [TIFFRaster::FormatSigned]]];
+		self::assertSame('00807f', $this->greyRow(8, "\x80\x00\xFF", $signed));
+		foreach ([true, false] as $bigEndian) {
+			[$short, $long] = $bigEndian ? ['n*', 'N*'] : ['v*', 'V*'];
+			self::assertSame('0080ff', $this->greyRow(16, pack($short, 0x8000, 0x0000, 0x7FFF), $signed, $bigEndian));
+			self::assertSame('0080ff', $this->greyRow(32, pack($long, 0x80000000, 0x00000000, 0x7FFFFFFF), $signed, $bigEndian));
+		}
+	}
+
+	public function testFloatSamplesScaleFromZeroToOneAndClamp()
+	{
+		$float = [339 => [TIFFDataType::UShort, [TIFFRaster::FormatFloat]]];
+		$values = [0.0, 0.5, 1.0, 2.0, -1.0, NAN, INF, -INF];
+		$expected = '0080ffff0000ff00';   // out of range clamps; NaN is black
+		foreach ([true, false] as $bigEndian) {
+			[$single, $double] = $bigEndian ? ['G*', 'E*'] : ['g*', 'e*'];
+			self::assertSame($expected, $this->greyRow(32, pack($single, ...$values), $float, $bigEndian));
+			self::assertSame($expected, $this->greyRow(64, pack($double, ...$values), $float, $bigEndian));
+		}
+	}
+
+	public function testHalfAndTwentyFourBitFloatSamples()
+	{
+		$float = [339 => [TIFFDataType::UShort, [TIFFRaster::FormatFloat]]];
+		// Half: 0, 0.5, 1, -0.5, +inf, -inf, NaN.
+		$half = [0x0000, 0x3800, 0x3C00, 0xB800, 0x7C00, 0xFC00, 0x7E00];
+		// Adobe's 24-bit form, seven exponent bits biased by 63: 0.5, 1, +inf, NaN.
+		$wide = ["\x3E\x00\x00", "\x3F\x00\x00", "\x7F\x00\x00", "\x7F\x00\x01"];
+		foreach ([true, false] as $bigEndian) {
+			$order = $bigEndian ? 'MM' : 'II';
+			self::assertSame('0080ff00ff0000', $this->greyRow(16, pack($bigEndian ? 'n*' : 'v*', ...$half), $float, $bigEndian), "half $order");
+			$bytes = implode('', $bigEndian ? $wide : array_map('strrev', $wide));
+			self::assertSame('80ffff00', $this->greyRow(24, $bytes, $float, $bigEndian), "24-bit $order");
+		}
+
+		// A subnormal half is nonzero: half the smallest normal, shown against a range
+		// that ends at the smallest normal.
+		$range = $float + [
+			340 => [TIFFDataType::Double, [0.0]],
+			341 => [TIFFDataType::Double, [2 ** -14]],
+		];
+		self::assertSame('0080', $this->greyRow(16, pack('n*', 0x0000, 0x0200), $range));
+	}
+
+	public function testFloatRangeComesFromSMinAndSMaxSampleValue()
+	{
+		$rgb = function (array $pixel, array $extra, bool $planar = false): string {
+			$tags = $extra + $this->baseTags(1, 1, TIFFRaster::Rgb, [32, 32, 32], 3);
+			$tags[339] = [TIFFDataType::UShort, [3, 3, 3]];
+			$blocks = [pack('G*', ...$pixel)];
+			if ($planar) {
+				$tags[284] = [TIFFDataType::UShort, [2]];
+				$blocks = array_map(fn ($value) => pack('G', $value), $pixel);
+			}
+			return bin2hex(ImageGraphics::rgbPixels(TIFFImage::fromString($this->buildTiff($tags, 273, $blocks, 279))->getImage()));
+		};
+		$perSample = [
+			340 => [TIFFDataType::Double, [0.0, 0.0, -10.0]],
+			341 => [TIFFDataType::Double, [100.0, 1.0, 10.0]],
+		];
+		// One range per sample, whether the samples are interleaved or in separate planes.
+		self::assertSame('808080', $rgb([50.0, 0.5, 0.0], $perSample));
+		self::assertSame('808080', $rgb([50.0, 0.5, 0.0], $perSample, true));
+
+		// One range for every sample.
+		$shared = [340 => [TIFFDataType::Float, [10.0]], 341 => [TIFFDataType::Float, [20.0]]];
+		self::assertSame('8000ff', $rgb([15.0, 10.0, 20.0], $shared));
+
+		// An empty or inverted range scales nothing, so the default stands in for it.
+		$inverted = [340 => [TIFFDataType::Double, [1.0]], 341 => [TIFFDataType::Double, [0.0]]];
+		self::assertSame('8000ff', $rgb([0.5, 0.0, 1.0], $inverted));
+	}
+
+	public function testHorizontalPredictorOnWideSamples()
+	{
+		$predicted = [317 => [TIFFDataType::UShort, [2]]];
+		foreach ([true, false] as $bigEndian) {
+			[$short, $long] = $bigEndian ? ['n*', 'N*'] : ['v*', 'V*'];
+			// 0x10F0, 0x2010, 0xFFFF stored as differences; the first sum carries into the
+			// high byte, which is the byte that is shown.
+			$data = pack($short, 0x10F0, 0x0F20, 0xDFEF);
+			self::assertSame('1020ff', $this->greyRow(16, $data, $predicted, $bigEndian));
+
+			// 0x01FFFFFF then 0x02000001: a difference of two carries through three bytes.
+			self::assertSame('0102', $this->greyRow(32, pack($long, 0x01FFFFFF, 0x00000002), $predicted, $bigEndian));
+
+			// Each sample differs from the same sample of the pixel before, not its neighbour.
+			$tags = $predicted + $this->baseTags(2, 1, TIFFRaster::Rgb, [16, 16, 16], 3);
+			$data = pack($short, 0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000);
+			$rgb = ImageGraphics::rgbPixels(TIFFImage::fromString($this->buildTiff($tags, 273, [$data], 279, $bigEndian))->getImage());
+			self::assertSame('102030507090', bin2hex($rgb));
+		}
+	}
+
+	public function testFloatingPointPredictor()
+	{
+		// The predictor's byte planes are most significant first whatever the document's
+		// byte order, so the same bytes decode the same in both.
+		$tags = [
+			339 => [TIFFDataType::UShort, [TIFFRaster::FormatFloat]],
+			317 => [TIFFDataType::UShort, [3]],
+		];
+		$single = self::floatPredict(pack('G*', 0.0, 0.25, 0.5, 1.0), 4, 1);
+		$double = self::floatPredict(pack('E*', 1.0, 0.5, 0.0), 8, 1);
+		foreach ([true, false] as $bigEndian) {
+			self::assertSame('004080ff', $this->greyRow(32, $single, $tags, $bigEndian));
+			self::assertSame('ff8000', $this->greyRow(64, $double, $tags, $bigEndian));
+		}
+
+		// Across a pixel of three samples, and compressed as a writer would store it.
+		$rgbTags = $tags + $this->baseTags(2, 1, TIFFRaster::Rgb, [32, 32, 32], 3);
+		$rgbTags[259] = [TIFFDataType::UShort, [TIFFImage::CompressionLzw]];
+		$rgbTags[339] = [TIFFDataType::UShort, [3, 3, 3]];
+		$row = self::floatPredict(pack('G*', 1.0, 0.0, 0.5, 0.0, 1.0, 0.25), 4, 3);
+		$rgb = ImageGraphics::rgbPixels(TIFFImage::fromString($this->buildTiff($rgbTags, 273, [LZWCompressor::compress($row)], 279))->getImage());
+		self::assertSame('ff008000ff40', bin2hex($rgb));
+	}
+
+	public function testSampleFormsWithNoColourAnswerFalse()
+	{
+		$format = fn (int ...$formats) => [339 => [TIFFDataType::UShort, $formats]];
+
+		// Complex integer and complex floating-point samples.
+		self::assertFalse($this->greyRow(32, "\0\0\0\0", $format(5)));
+		self::assertFalse($this->greyRow(64, str_repeat("\0", 8), $format(6)));
+
+		// A depth the format does not come in.
+		self::assertFalse($this->greyRow(8, "\0", $format(TIFFRaster::FormatFloat)));
+		self::assertFalse($this->greyRow(4, "\0", $format(TIFFRaster::FormatSigned)));
+
+		// Samples of one pixel in different formats.
+		$tags = $format(1, 1, 3) + $this->baseTags(1, 1, TIFFRaster::Rgb, [8, 8, 8], 3);
+		self::assertFalse(TIFFImage::fromString($this->buildTiff($tags, 273, ["\0\0\0"], 279))->getImage());
+
+		// A palette index must be an unsigned byte or less.
+		$map = [320 => [TIFFDataType::UShort, array_fill(0, 3 * 256, 0)]];
+		$tags = $format(TIFFRaster::FormatSigned) + $map + $this->baseTags(1, 1, TIFFRaster::Palette, [8], 1);
+		self::assertFalse(TIFFImage::fromString($this->buildTiff($tags, 273, ["\0"], 279))->getImage());
+		$tags = $map + $this->baseTags(1, 1, TIFFRaster::Palette, [16], 1);
+		self::assertFalse(TIFFImage::fromString($this->buildTiff($tags, 273, ["\0\0"], 279))->getImage());
+
+		// L*a*b* already defines which of its samples are signed.
+		foreach ([TIFFRaster::CieLab, TIFFRaster::ICCLab] as $photometric) {
+			$tags = $format(2, 2, 2) + $this->baseTags(1, 1, $photometric, [8, 8, 8], 3);
+			self::assertFalse(TIFFImage::fromString($this->buildTiff($tags, 273, ["\0\0\0"], 279))->getImage());
+		}
+
+		// A predictor the samples cannot take: differences of samples smaller than a byte,
+		// the floating-point predictor on integers, and one the specification does not define.
+		self::assertFalse($this->greyRow(4, "\0", [317 => [TIFFDataType::UShort, [2]]]));
+		self::assertFalse($this->greyRow(16, "\0\0", [317 => [TIFFDataType::UShort, [3]]]));
+		self::assertFalse($this->greyRow(8, "\0", [317 => [TIFFDataType::UShort, [4]]]));
+
+		// A tag listing no formats at all leaves the default.
+		self::assertSame('80', $this->greyRow(8, "\x80", $format()));
 	}
 
 	public function testTiledRasterWithoutTileDataAnswersFalse()

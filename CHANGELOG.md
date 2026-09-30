@@ -12,6 +12,10 @@ so.
 
 ### Added
 
+- **TIFF `SampleFormat`** in `TIFFImage::getImage()`: signed integer samples at 8, 16 and 32 bits;
+  IEEE floating point at 16 (half), 24, 32 and 64 bits, scaled from `SMinSampleValue`–
+  `SMaxSampleValue` or 0.0–1.0; unsigned at 32 bits; and the floating-point predictor.
+  Complex samples, the one format with no colour to show, are refused.
 - **AVI**, read-write. `LIST INFO` tags, XMP in `_PMX` and the `IDIT` timestamp, with privacy
   scrubbing by category. The media is never decoded.
 - **ISO BMFF**, read-write — HEIF, AVIF, MP4 and QuickTime, told apart by the `ftyp` brand.
@@ -36,6 +40,18 @@ so.
 - Appending an item to an `iinf` table too short to hold its own version and entry count wrote
   a malformed table. The count is padded out rather than special cased, so a truncated table
   is rewritten as a valid one.
+- 16-bit TIFF samples in a little-endian (`II`) file were read from their low byte, so every such
+  raster decoded as noise without an error. `TIFFRaster::toRgb()` now takes the document's
+  byte order.
+- The horizontal predictor was undone only for 8-bit samples; a 16-bit predicted raster decoded
+  its stored differences as values. It is now undone at any whole-byte width, and a predictor
+  a raster cannot take is refused.
+- A subsampled YCbCr raster ignored `FillOrder`, and a 16-bit palette raster used the high byte
+  of its index. The first is honoured; the second, and a palette index that is not unsigned,
+  are refused.
+- A Float field's text showed its widening to a double (`0.10000000149011612` for a stored
+  0.1). `EXIFTags::textValue()` now renders the shortest decimal that packs to the same four
+  bytes.
 - `GIFLZWCompressor::assertMinCodeSize()` threw `\RuntimeException` while its docblock promised
   `\InvalidArgumentException` — a different SPL hierarchy, so a caller catching the
   documented type would have missed the throw. It now throws `\UnexpectedValueException`,

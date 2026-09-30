@@ -180,16 +180,17 @@ class TIFFImage extends ImageFile
 
 	/**
 	 * Decodes the raster into a graphics-library image through {@see TIFFRaster}:
-	 * strips or tiles, either planar configuration, 1 to 16 bits per sample, either
-	 * fill order, the uncompressed/PackBits/LZW/CCITT codings, and the grayscale, RGB,
-	 * palette, CMYK, YCbCr, and L*a*b* photometrics.
+	 * strips or tiles, either planar configuration, either byte order and fill order,
+	 * unsigned, signed, and floating-point samples of 1 to 64 bits, the
+	 * uncompressed/PackBits/LZW/CCITT codings with either predictor, and the grayscale,
+	 * RGB, palette, CMYK, YCbCr, and L*a*b* photometrics.
 	 * @param ?string $mode The {@see ImageGraphicsMode} to build in; null for the default.
 	 * @return false|\GdImage|\Imagick The image, or false when the raster form is unsupported.
 	 */
 	public function getImage(?string $mode = null): false|\GdImage|\Imagick
 	{
 		$ifd0 = $this->_exif?->getIfd0();
-		$rgb = $ifd0 === null ? null : TIFFRaster::toRgb($ifd0, (int) $this->getWidth(), (int) $this->getHeight());
+		$rgb = $ifd0 === null ? null : TIFFRaster::toRgb($ifd0, (int) $this->getWidth(), (int) $this->getHeight(), $this->_exif->getTiff()->getIsBigEndian());
 		if ($rgb === null) {
 			return false;
 		}

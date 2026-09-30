@@ -20,16 +20,25 @@ use Belisoful\Image\Compression\PackBitsCompressor;
  *
  * Decodes a baseline TIFF raster to RGB24 pixels.  It reads both organizations —
  * strips (`StripOffsets`) and tiles (`TileOffsets`, blitting each padded tile into
- * place) — in either planar configuration (chunky and separate planes), at 1, 2, 4,
- * 8, and 16 bits per sample, in either fill order (the reversed order is bit-mirrored
- * per byte), through the uncompressed, PackBits, LZW (with the horizontal predictor),
- * and CCITT fax codings.
+ * place) — in either planar configuration (chunky and separate planes), in either byte
+ * order and either fill order (the reversed order is bit-mirrored per byte), through the
+ * uncompressed, PackBits, LZW, and CCITT fax codings, undoing the horizontal predictor at
+ * any whole-byte sample width and the floating-point predictor.
+ *
+ * Every `SampleFormat` with a meaning as a colour converts: unsigned integers at 1, 2, 4,
+ * 8, 16, and 32 bits; signed integers at 8, 16, and 32, offset so the most negative value
+ * is black; and IEEE floating point at 16 (half), 24, 32, and 64 bits, scaled from
+ * `SMinSampleValue`–`SMaxSampleValue` or 0.0–1.0 when those are absent, and clamped.  The
+ * "undefined" format is read as unsigned, as the specification directs.  Wider samples are
+ * reduced to their most significant byte.
  *
  * Every baseline and extension photometric interpretation converts: white-is-zero and
  * black-is-zero grayscale, RGB, palette color (through the `ColorMap`), `Separated`
  * CMYK, `YCbCr` (honoring `YCbCrSubSampling`, including the subsampled unit layout),
- * and CIE/ICC `L*a*b*`.  A raster whose form is genuinely outside this set answers
- * null rather than guessing.
+ * and CIE/ICC `L*a*b*`.  A raster whose form is genuinely outside this set answers null
+ * rather than guessing: complex samples, samples of mixed formats or depths, a palette
+ * index that is not an unsigned byte or less, and an L*a*b* sample that is not unsigned,
+ * since that photometric already defines the signs of a* and b*.
  *
  * @author Brad Anderson <belisoful@icloud.com>
  */
@@ -62,20 +71,44 @@ class TIFFRaster
 	/** The PhotometricInterpretation of an ICC L*a*b* raster. */
 	public const ICCLab = 9;
 
+	/** The SampleFormat of unsigned integer samples, the default. */
+	public const FormatUnsigned = 1;
+
+	/** The SampleFormat of two's-complement signed integer samples. */
+	public const FormatSigned = 2;
+
+	/** The SampleFormat of IEEE floating-point samples. */
+	public const FormatFloat = 3;
+
+	/** The SampleFormat the specification leaves undefined, to be read as unsigned. */
+	public const FormatUndefined = 4;
+
+	/**
+	 * The bits per sample each decodable SampleFormat admits.  The complex formats (5 and
+	 * 6) are absent: a complex sample has no colour to show.
+	 */
+	public const FormatDepths = [
+		self::FormatUnsigned => [1, 2, 4, 8, 16, 32],
+		self::FormatSigned => [8, 16, 32],
+		self::FormatFloat => [16, 24, 32, 64],
+	];
+
 	/**
 	 * Decodes an IFD's raster to RGB24 pixels, row-major, three bytes per pixel.
 	 * @param TIFFIfd $ifd The image IFD, carrying its strip or tile data as the
 	 *   offsets tag's {@see TIFFTag::getExternalData() external data}.
 	 * @param int $width The image width in pixels.
 	 * @param int $height The image height in pixels.
+	 * @param bool $bigEndian Whether the document is big-endian (MM), the order its
+	 *   multi-byte samples are stored in.
 	 * @return ?string The RGB pixel bytes, or null when the raster form is unsupported.
 	 */
-	public static function toRgb(TIFFIfd $ifd, int $width, int $height): ?string
+	public static function toRgb(TIFFIfd $ifd, int $width, int $height, bool $bigEndian): ?string
 	{
 		if ($width < 1 || $height < 1) {
 			return null;
 		}
-		$geometry = static::readGeometry($ifd, $width, $height);
+		$geometry = static::readGeometry($ifd, $width, $height, $bigEndian);
 		if ($geometry === null) {
 			return null;
 		}
@@ -96,9 +129,10 @@ class TIFFRaster
 	 * @param TIFFIfd $ifd The image IFD.
 	 * @param int $width The image width.
 	 * @param int $height The image height.
+	 * @param bool $bigEndian Whether multi-byte samples are big-endian.
 	 * @return ?array The geometry, or null when unsupported.
 	 */
-	protected static function readGeometry(TIFFIfd $ifd, int $width, int $height): ?array
+	protected static function readGeometry(TIFFIfd $ifd, int $width, int $height, bool $bigEndian): ?array
 	{
 		$bitsTag = $ifd->getTag(258)?->getValues();
 		$bitsList = is_array($bitsTag) ? array_values($bitsTag) : [$bitsTag ?? 1];
@@ -108,7 +142,34 @@ class TIFFRaster
 				return null;   // mixed sample depths
 			}
 		}
-		if (!in_array($bits, [1, 2, 4, 8, 16], true)) {
+		$formats = array_values((array) ($ifd->getTag(339)?->getValues() ?? []));
+		$format = (int) ($formats[0] ?? self::FormatUnsigned);
+		foreach ($formats as $each) {
+			if ((int) $each !== $format) {
+				return null;   // mixed sample formats
+			}
+		}
+		if ($format === self::FormatUndefined) {
+			$format = self::FormatUnsigned;
+		}
+		if (!in_array($bits, self::FormatDepths[$format] ?? [], true)) {
+			return null;
+		}
+		$photometric = (int) ($ifd->getTagValue(262) ?? self::BlackIsZero);
+		if ($photometric === self::Palette && ($format !== self::FormatUnsigned || $bits > 8)) {
+			return null;   // an index is an unsigned byte or less
+		}
+		if (($photometric === self::CieLab || $photometric === self::ICCLab) && $format !== self::FormatUnsigned) {
+			return null;   // the photometric already says which of L*, a*, b* are signed
+		}
+		$predictor = (int) ($ifd->getTagValue(317) ?? 1);
+		$predictable = match ($predictor) {
+			1 => true,
+			2 => $bits >= 8,                       // differences of whole-byte samples
+			3 => $format === self::FormatFloat,    // the floating-point predictor
+			default => false,
+		};
+		if (!$predictable) {
 			return null;
 		}
 		$samples = max(1, (int) ($ifd->getTagValue(277) ?? 1));
@@ -123,13 +184,16 @@ class TIFFRaster
 
 		return [
 			'compression' => (int) ($ifd->getTagValue(259) ?? 1),
-			'photometric' => (int) ($ifd->getTagValue(262) ?? self::BlackIsZero),
+			'photometric' => $photometric,
 			'bits' => $bits,
+			'format' => $format,
+			'bigEndian' => $bigEndian,
+			'range' => $format === self::FormatFloat ? static::sampleRange($ifd, $samples) : [],
 			'samples' => $samples,
 			'planar' => $planar,
 			'fillOrder' => (int) ($ifd->getTagValue(266) ?? 1),
 			't4options' => (int) ($ifd->getTagValue(292) ?? 0),
-			'predictor' => (int) ($ifd->getTagValue(317) ?? 1),
+			'predictor' => $predictor,
 			'rowsPerStrip' => (int) ($ifd->getTagValue(278) ?? $height),
 			'tileWidth' => (int) ($ifd->getTagValue(322) ?? 0),
 			'tileLength' => (int) ($ifd->getTagValue(323) ?? 0),
@@ -139,8 +203,29 @@ class TIFFRaster
 	}
 
 	/**
+	 * Reads the range each floating-point sample is scaled from: `SMinSampleValue` and
+	 * `SMaxSampleValue`, one value per sample or one for all, else 0.0 to 1.0.  A range
+	 * that is empty or inverted scales nothing, so it too falls back to 0.0 to 1.0.
+	 * @param TIFFIfd $ifd The image IFD.
+	 * @param int $samples The samples per pixel.
+	 * @return array<int, array{float, float}> The [low, high] pair of each sample.
+	 */
+	protected static function sampleRange(TIFFIfd $ifd, int $samples): array
+	{
+		$lows = array_values((array) ($ifd->getTag(340)?->getValues() ?? []));
+		$highs = array_values((array) ($ifd->getTag(341)?->getValues() ?? []));
+		$range = [];
+		for ($sample = 0; $sample < $samples; $sample++) {
+			$low = (float) ($lows[$sample] ?? $lows[0] ?? 0.0);
+			$high = (float) ($highs[$sample] ?? $highs[0] ?? 1.0);
+			$range[] = $high > $low ? [$low, $high] : [0.0, 1.0];
+		}
+		return $range;
+	}
+
+	/**
 	 * Decodes every block into one interleaved buffer of samples, one byte per sample
-	 * (16-bit samples are reduced to their high byte).
+	 * (wider samples are reduced to their most significant byte).
 	 * @param TIFFIfd $ifd The image IFD.
 	 * @param array $geometry The {@see readGeometry()} geometry.
 	 * @param int $width The image width.
@@ -161,7 +246,7 @@ class TIFFRaster
 			$planeData[$plane] = str_repeat("\0", $width * $height * $perPlane);
 		}
 		foreach ($blocks as $block) {
-			$decoded = static::decodeBlock($block['data'], $geometry, $block['width'], $block['rows'], $perPlane);
+			$decoded = static::decodeBlock($block['data'], $geometry, $block['width'], $block['rows'], $perPlane, $block['plane']);
 			if ($decoded === null) {
 				return null;
 			}
@@ -247,9 +332,10 @@ class TIFFRaster
 	 * @param int $blockWidth The block width in pixels.
 	 * @param int $rows The block height in rows.
 	 * @param int $perPlane The samples per pixel in this plane.
+	 * @param int $plane The plane, which is the first sample's index within the pixel.
 	 * @return ?string The block's sample bytes, or null when unsupported.
 	 */
-	protected static function decodeBlock(string $data, array $geometry, int $blockWidth, int $rows, int $perPlane): ?string
+	protected static function decodeBlock(string $data, array $geometry, int $blockWidth, int $rows, int $perPlane, int $plane = 0): ?string
 	{
 		$bits = $geometry['bits'];
 		$rowBytes = intdiv($blockWidth * $bits * $perPlane + 7, 8);
@@ -283,10 +369,154 @@ class TIFFRaster
 		if ($geometry['fillOrder'] === 2) {
 			$data = static::reverseBits($data);
 		}
-		if ($geometry['predictor'] === 2 && $bits === 8) {
-			$data = HorizontalPredictor::decode($data, $blockWidth, $perPlane);
+		$perRow = $blockWidth * $perPlane;
+		$bigEndian = $geometry['bigEndian'];
+		if ($geometry['predictor'] === 2) {
+			$data = $bits === 8
+				? HorizontalPredictor::decode($data, $blockWidth, $perPlane)
+				: static::undoPredictor($data, intdiv($bits, 8), $bigEndian, $perRow, $perPlane, $rows);
+		} elseif ($geometry['predictor'] === 3) {
+			$data = static::undoFloatPredictor($data, intdiv($bits, 8), $perRow, $perPlane, $rows);
+			$bigEndian = true;
 		}
-		return static::unpackSamples($data, $bits, $rowBytes, $rows, $blockWidth * $perPlane);
+		if ($bits < 8 || ($bits === 8 && $geometry['format'] === self::FormatUnsigned)) {
+			return static::unpackSamples($data, $bits, $rowBytes, $rows, $perRow);
+		}
+		return static::reduceSamples($data, ['bigEndian' => $bigEndian] + $geometry, $rows, $perRow, $perPlane, $plane);
+	}
+
+	/**
+	 * Undoes the horizontal predictor on samples wider than a byte: each sample was
+	 * stored as its difference from the same sample of the pixel before, so each is
+	 * restored by adding that one back, carried byte by byte from the least significant.
+	 * @param string $data The differenced rows.
+	 * @param int $bytes The bytes per sample.
+	 * @param bool $bigEndian Whether the samples are big-endian.
+	 * @param int $perRow The samples per row.
+	 * @param int $stride The samples per pixel.
+	 * @param int $rows The row count.
+	 * @return string The restored rows.
+	 */
+	protected static function undoPredictor(string $data, int $bytes, bool $bigEndian, int $perRow, int $stride, int $rows): string
+	{
+		$rowBytes = $perRow * $bytes;
+		$data = str_pad($data, $rowBytes * $rows, "\0");
+		for ($y = 0; $y < $rows; $y++) {
+			for ($i = $stride; $i < $perRow; $i++) {
+				$at = $y * $rowBytes + $i * $bytes;
+				$from = $at - $stride * $bytes;
+				$carry = 0;
+				for ($k = 0; $k < $bytes; $k++) {
+					$byte = $bigEndian ? $bytes - 1 - $k : $k;
+					$sum = ord($data[$at + $byte]) + ord($data[$from + $byte]) + $carry;
+					$data[$at + $byte] = chr($sum & 0xFF);
+					$carry = $sum >> 8;
+				}
+			}
+		}
+		return $data;
+	}
+
+	/**
+	 * Undoes the floating-point predictor (Adobe Photoshop TIFF Technical Note 3): each
+	 * row's samples were split into byte planes, most significant first, and the whole row
+	 * then differenced byte by byte across the pixel.  The samples come back big-endian,
+	 * whatever the document's byte order, because the planes are in that order.
+	 * @param string $data The predicted rows.
+	 * @param int $bytes The bytes per sample.
+	 * @param int $perRow The samples per row.
+	 * @param int $stride The samples per pixel.
+	 * @param int $rows The row count.
+	 * @return string The big-endian sample rows.
+	 */
+	protected static function undoFloatPredictor(string $data, int $bytes, int $perRow, int $stride, int $rows): string
+	{
+		$rowBytes = $perRow * $bytes;
+		$data = str_pad($data, $rowBytes * $rows, "\0");
+		$out = '';
+		for ($y = 0; $y < $rows; $y++) {
+			$row = substr($data, $y * $rowBytes, $rowBytes);
+			for ($i = $stride; $i < $rowBytes; $i++) {
+				$row[$i] = chr((ord($row[$i]) + ord($row[$i - $stride])) & 0xFF);
+			}
+			for ($i = 0; $i < $perRow; $i++) {
+				for ($plane = 0; $plane < $bytes; $plane++) {
+					$out .= $row[$plane * $perRow + $i];
+				}
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * Reduces whole-byte samples of any format to one unsigned byte each: an unsigned
+	 * sample to its most significant byte, a signed one to that byte with its sign bit
+	 * flipped (so the most negative value is 0 and zero is 128), and a floating-point one
+	 * scaled from its sample range and clamped.
+	 * @param string $data The sample rows, unpadded.
+	 * @param array $geometry The geometry, its byte order that of these samples.
+	 * @param int $rows The row count.
+	 * @param int $perRow The samples per row.
+	 * @param int $perPlane The samples per pixel in this plane.
+	 * @param int $plane The plane, the first sample's index within the pixel.
+	 * @return string The sample bytes.
+	 */
+	protected static function reduceSamples(string $data, array $geometry, int $rows, int $perRow, int $perPlane, int $plane): string
+	{
+		$bytes = intdiv($geometry['bits'], 8);
+		$count = $rows * $perRow;
+		$data = str_pad($data, $count * $bytes, "\0");
+		$out = '';
+		if ($geometry['format'] !== self::FormatFloat) {
+			$high = $geometry['bigEndian'] ? 0 : $bytes - 1;
+			$flip = $geometry['format'] === self::FormatSigned ? 0x80 : 0;
+			for ($i = 0; $i < $count; $i++) {
+				$out .= chr(ord($data[$i * $bytes + $high]) ^ $flip);
+			}
+			return $out;
+		}
+		for ($i = 0; $i < $count; $i++) {
+			$sample = substr($data, $i * $bytes, $bytes);
+			$value = static::floatSample($geometry['bigEndian'] ? $sample : strrev($sample));
+			[$low, $high] = $geometry['range'][$plane + $i % $perPlane] ?? [0.0, 1.0];
+			$scaled = ($value - $low) / ($high - $low);
+			$out .= chr(is_nan($scaled) ? 0 : (int) round(max(0.0, min(1.0, $scaled)) * 255));
+		}
+		return $out;
+	}
+
+	/**
+	 * Reads one big-endian IEEE floating-point sample.  The 16-bit form is the standard
+	 * half (5 exponent bits); the 24-bit form is the one Adobe writes (7 exponent bits,
+	 * 16 of fraction), which PHP's pack() has no code for, so both small forms are
+	 * assembled from their fields.
+	 * @param string $bytes The sample's 2, 3, 4, or 8 bytes, most significant first.
+	 * @return float The value; infinities and NaN included.
+	 */
+	protected static function floatSample(string $bytes): float
+	{
+		$width = strlen($bytes);
+		if ($width === 4) {
+			return \unpack('G', $bytes)[1];
+		}
+		if ($width === 8) {
+			return \unpack('E', $bytes)[1];
+		}
+		$bits = $width * 8;
+		$exponentBits = $bits === 16 ? 5 : 7;
+		$fractionBits = $bits - 1 - $exponentBits;
+		$word = \unpack('N', str_pad($bytes, 4, "\0", STR_PAD_LEFT))[1];
+		$sign = ($word >> ($bits - 1)) === 1 ? -1.0 : 1.0;
+		$exponent = ($word >> $fractionBits) & ((1 << $exponentBits) - 1);
+		$fraction = (float) ($word & ((1 << $fractionBits) - 1)) / (1 << $fractionBits);
+		$bias = (1 << ($exponentBits - 1)) - 1;
+		if ($exponent === 0) {
+			return $sign * $fraction * 2 ** (1 - $bias);   // subnormal
+		}
+		if ($exponent === (1 << $exponentBits) - 1) {
+			return $fraction === 0.0 ? $sign * INF : NAN;
+		}
+		return $sign * (1 + $fraction) * 2 ** ($exponent - $bias);
 	}
 
 	/**
@@ -307,10 +537,9 @@ class TIFFRaster
 	}
 
 	/**
-	 * Expands packed rows to one byte per sample, reducing 16-bit samples to their
-	 * high byte.
+	 * Expands packed unsigned rows of a byte or less per sample to one byte per sample.
 	 * @param string $data The packed rows.
-	 * @param int $bits The bits per sample.
+	 * @param int $bits The bits per sample: 1, 2, 4, or 8.
 	 * @param int $rowBytes The packed row stride.
 	 * @param int $rows The row count.
 	 * @param int $perRow The samples per row.
@@ -323,15 +552,6 @@ class TIFFRaster
 			for ($y = 0; $y < $rows; $y++) {
 				$row = substr($data, $y * $rowBytes, $perRow);
 				$out .= str_pad($row, $perRow, "\0");
-			}
-			return $out;
-		}
-		if ($bits === 16) {
-			$out = '';
-			for ($y = 0; $y < $rows; $y++) {
-				for ($i = 0; $i < $perRow; $i++) {
-					$out .= $data[$y * $rowBytes + $i * 2] ?? "\0";   // the high byte
-				}
 			}
 			return $out;
 		}
@@ -529,8 +749,9 @@ class TIFFRaster
 	protected static function decodeSubsampledYCbCr(TIFFIfd $ifd, array $geometry, int $width, int $height): ?string
 	{
 		if ($geometry['planar'] !== 1 || $geometry['bits'] !== 8 || $geometry['samples'] !== 3
-			|| $geometry['tileWidth'] > 0) {
-			return null;
+			|| $geometry['tileWidth'] > 0 || $geometry['format'] !== self::FormatUnsigned
+			|| $geometry['predictor'] !== 1) {
+			return null;   // the unit layout is defined for plain unsigned bytes only
 		}
 		[$hSub, $vSub] = $geometry['subsampling'];
 		if ($hSub < 1 || $vSub < 1) {
@@ -552,6 +773,9 @@ class TIFFRaster
 				return null;
 			}
 			$data .= $decoded;
+		}
+		if ($geometry['fillOrder'] === 2) {
+			$data = static::reverseBits($data);
 		}
 
 		$unitLuma = $hSub * $vSub;
