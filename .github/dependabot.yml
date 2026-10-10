@@ -1,0 +1,35 @@
+# Dependabot version updates.
+#
+# composer.lock is not committed (this is a library), so Dependabot reads composer.json
+# alone and opens a pull request only when a release falls outside a constraint. "widen"
+# adds the new major beside the old one (^10 becomes ^10 || ^11) rather than replacing it,
+# which keeps the oldest PHP in the CI matrix installable. Updates inside a constraint need
+# no pull request: CI resolves the newest version on every run.
+#
+# The Xdebug pin in the workflow's setup-php extensions list is not something Dependabot
+# can see; it is held back by hand, and the comment beside it says why.
+#
+# Labels are left to Dependabot's defaults ("dependencies" plus the ecosystem), which it
+# creates on first use; a configured label that does not exist is silently dropped.
+version: 2
+updates:
+  - package-ecosystem: composer
+    directory: /
+    schedule:
+      interval: weekly
+    versioning-strategy: widen
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore
+      include: scope

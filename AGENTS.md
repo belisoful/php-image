@@ -98,9 +98,9 @@
   reported uncovered there but covered locally, believe CI and write the test that actually
   exercises the branch. Do not chase it by weakening the gate.
 - Coverage is gated at two depths and both are expected to hold. **Lines: 99.91%** —
-  `tests/test_tools/coverage-gate.php`, run on every push. **Branches: 99.70%** —
+  `tests/test_tools/coverage-gate.php`, run on every CI run. **Branches: 99.70%** —
   `tests/test_tools/branch-gate.php`, run by the `branches` job of
-  `.github/workflows/php-image.yml` on pull requests and main, because a `--path-coverage` run
+  `.github/workflows/php-image.yml` beside it, a job of its own because a `--path-coverage` run
   takes far longer than the suite itself. Branch coverage is the stronger measure: it catches a
   decision that only ever goes one way, which a covered line hides. The branch job runs against
   **`phpunit-branch.xml`**, which holds `src/Stream` and `src/Util` out of the path-coverage

@@ -1,5 +1,12 @@
 name: php-image
-on: [push, pull_request, workflow_dispatch]
+# Pushes run CI on main only. A pull request's branch is tested by its pull_request event;
+# running it on push as well tested every such commit twice (Dependabot pushes its branches
+# into this repository, so each of its pull requests did exactly that).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 jobs:
   composerext:
     name: Image (PHP ${{ matrix.php-versions }}${{ matrix.imagick && ', GD + ImageMagick' || ', GD only' }})
@@ -81,10 +88,10 @@ jobs:
     # Branch coverage lives beside the rest of CI rather than in its own workflow, but it
     # cannot run on every push: instrumenting every branch takes minutes where the suite
     # takes seconds.  It runs where it pays for itself — on a pull request, on a commit
-    # that lands on main, and on demand — so a failure always names the change that caused
-    # it.  Line coverage above says a line ran; this says the decision on it went both ways.
+    # that lands on main, and on demand, which is every event the workflow takes — so a
+    # failure always names the change that caused it.  Line coverage above says a line ran;
+    # this says the decision on it went both ways.
     name: Branch coverage (GD and ImageMagick)
-    if: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
 
     defaults:
