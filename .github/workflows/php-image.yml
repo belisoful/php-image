@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout library
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           path: php-image
 
@@ -100,7 +100,7 @@ jobs:
 
     steps:
       - name: Checkout library
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           path: php-image
 
