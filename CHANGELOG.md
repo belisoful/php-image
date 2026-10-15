@@ -33,7 +33,7 @@ so.
   rewrite updates to what it actually wrote.
 - **A shared ISO BMFF box model** (`BMFFBox`), lifted out of the JUMBF reader: the 32-bit
   size, the 64-bit and run-to-the-end forms, `uuid` user types and depth-capped nesting.
-- CI now covers PHP 8.4 and 8.5 alongside 8.1 to 8.3.
+- CI now covers PHP 8.4 and 8.5 alongside 8.2 and 8.3.
 
 ### Fixed
 
@@ -59,6 +59,9 @@ so.
 
 ### Changed
 
+- **PHP 8.2 is now the minimum** in both mirrors. The PRADO framework that prado-image builds on
+  requires it, and the two repositories share code file for file, so they share a language
+  floor too. PHP 8.1 is past end of life; CI no longer runs it.
 - Every write to these containers obeys a **never-move rule**, because they hold absolute file
   offsets (`idx1`, `indx`, `stco`/`co64`, `saio`, `iloc`) that naive insertion corrupts. A
   chunk is rewritten in its own slot when it fits, else the slot is vacated to padding,

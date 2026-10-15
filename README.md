@@ -116,7 +116,7 @@ $exif->getThumbnail();
 
 | Requirement | Scope | Purpose |
 |---|---|---|
-| PHP 8.1 or higher | required | The language floor |
+| PHP 8.2 or higher | required | The language floor |
 | `psr/http-message` `^1.1 \|\| ^2.0` | required | The PSR-7 `StreamInterface` every container and metadata class accepts and produces |
 | `ext-gd` | suggested | Thumbnail/caption conversion as `\GdImage` (the preferred `ImageGraphics` library); generates the unit-test fixtures |
 | `ext-imagick` | suggested | Thumbnail/caption conversion as `\Imagick` (the alternate `ImageGraphics` library) |

@@ -14,7 +14,6 @@ A standalone PHP library providing image container readers, metadata editing, an
 | Interfaces | `I` prefix (`IPrivacyScrubbable`, `IImageGraphicsLibrary`) | `Interface` suffix (`PrivacyScrubbableInterface`, `ImageGraphicsLibraryInterface`) |
 | Base types | Prado's `TComponent`, `TEnumerable`, and the framework IO stream layer (`TStream`, `TLimitStream`, `Prado\IO\Compression\ICompressor`) | dependency-free equivalents: plain classes, class constants for enumerables, `Belisoful\Image\Stream\StreamIO`/`BinaryReader`, its own `CompressorInterface` |
 | Exceptions | Prado's `TIOException`/`TInvalidDataValueException`/`TInvalidDataTypeException` with keys in `config/errorMessages.txt` | SPL only (`\InvalidArgumentException`, `\UnexpectedValueException`, `\RuntimeException`), messages at the throw site |
-| PHP floor | 8.2 — the framework's own floor, so an older PHP cannot load the classes this extension builds on | 8.1 |
 | Dependencies | `pradosoft/prado` (dev `^4.4@dev`); registers class map + error messages through `extra.prado` | `psr/http-message` only |
 | Private spaces | `toReservedSpaceStream()`/`toFreeSpaceStream()` over the framework's stream decorators | `getReservedSpaces()`/`getFreeSpaces()` offsets; the caller windows the bytes |
 
