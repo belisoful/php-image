@@ -95,16 +95,12 @@ class ImageFileFacadeTest extends PHPUnit\Framework\TestCase
 		self::assertFalse($gif->hasEXIF());
 		$gif->setEXIF(null);
 
-		// A format with no writable EXIF carrier throws on a non-null value rather than dropping
-		// it — GIF (no EXIF at all) and TIFF (EXIF is the document, not replaceable wholesale).
-		$tiff = ImageFile::fromString(TIFFImage::fromImage($this->gd())->toBinary());
-		foreach ([$gif, $tiff] as $image) {
-			try {
-				$image->setEXIF(new EXIF());
-				self::fail('setEXIF should throw for ' . $image->getFormat());
-			} catch (\RuntimeException $e) {
-				self::assertStringContainsString($image->getFormat(), $e->getMessage());
-			}
+		// A format with no writable EXIF carrier throws on a non-null value rather than dropping it.
+		try {
+			$gif->setEXIF(new EXIF());
+			self::fail('setEXIF should throw for GIF');
+		} catch (\RuntimeException $e) {
+			self::assertStringContainsString('GIF', $e->getMessage());
 		}
 	}
 

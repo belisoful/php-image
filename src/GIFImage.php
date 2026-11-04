@@ -364,25 +364,54 @@ class GIFImage extends ImageFile
 	}
 
 	/**
-	 * Extends {@see clearPrivateData()} to the carrier only a GIF has: the comment
+	 * Returns the bytes after the trailer, where a decoder of this image does not look —
+	 * typically an appended file.
+	 * @return string The trailing bytes, or '' when there are none.
+	 */
+	public function getTrailingData(): string
+	{
+		return $this->_trailingBytes;
+	}
+
+	/**
+	 * Removes the bytes after the trailer ({@see getTrailingData()}).
+	 * {@see clearPrivateData()} does this for every category, since no carrier reaches
+	 * what they hold.
+	 * @return bool Whether anything was removed.
+	 */
+	public function removeTrailingData(): bool
+	{
+		$removed = $this->_trailingBytes !== '';
+		$this->_trailingBytes = '';
+		return $removed;
+	}
+
+	/**
+	 * Extends {@see clearPrivateData()} to the carriers only a GIF has: the comment
 	 * extensions, free text that often names people and places
-	 * ({@see PrivacyCategory::Description}).  The XMP and ICC application extensions are
+	 * ({@see PrivacyCategory::Description}), and, for any category, the data after the
+	 * trailer ({@see removeTrailingData()}).  The XMP and ICC application extensions are
 	 * reached through the shared carriers; the loop count and graphic controls describe the
 	 * animation, not a person, and stay.
 	 * @param int $types The {@see PrivacyCategory} flags to remove.
-	 * @return int The number of comment extensions removed.
+	 * @return int The number of comment extensions removed, plus one for trailing data.
 	 */
 	protected function clearFormatPrivateData(int $types): int
 	{
+		$removed = $types !== 0 && $this->removeTrailingData() ? 1 : 0;
 		if (($types & PrivacyCategory::Description) === 0) {
-			return 0;
+			return $removed;
 		}
-		$before = count($this->_blocks);
-		$this->_blocks = array_values(array_filter(
-			$this->_blocks,
-			fn ($block): bool => !($block instanceof GIFExtension && $block->getLabel() === GIFBlockType::CommentLabel),
-		));
-		return $before - count($this->_blocks);
+		$kept = [];
+		foreach ($this->_blocks as $block) {
+			if ($block instanceof GIFExtension && $block->getLabel() === GIFBlockType::CommentLabel) {
+				$removed++;
+			} else {
+				$kept[] = $block;
+			}
+		}
+		$this->_blocks = $kept;
+		return $removed;
 	}
 
 	/**

@@ -48,6 +48,17 @@ final class SourceRange
 	}
 
 	/**
+	 * Returns a range over the leading bytes of this one, from the same source and offset —
+	 * how a container drops the tail of a deferred payload without reading it in.
+	 * @param int $length The new length, at most {@see getLength()}.
+	 * @return self The shortened range.
+	 */
+	public function withLength(int $length): self
+	{
+		return new self($this->source, $this->offset, min($length, $this->length));
+	}
+
+	/**
 	 * Copies the payload from the source to a target in bounded memory.
 	 * @param mixed $target A writable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
 	 * @return int The number of bytes written (equal to {@see getLength()}).

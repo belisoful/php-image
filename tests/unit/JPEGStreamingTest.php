@@ -43,6 +43,21 @@ class JPEGStreamingTest extends PHPUnit\Framework\TestCase
 		fclose($target);
 	}
 
+	public function testAStreamedJpegDropsItsTrailingDataWithoutLoadingTheScan()
+	{
+		$bytes = $this->jpegBytes();
+		$source = TestIOHelper::dataResource($bytes . $bytes);
+		$lazy = JPEGImage::fromStreamLazy($source);
+		self::assertSame($bytes, $lazy->getTrailingData());
+		self::assertTrue($lazy->removeTrailingData());
+		$target = TestIOHelper::memoryResource();
+		$lazy->streamTo($target);
+		rewind($target);
+		self::assertSame(bin2hex((string) JPEGImage::fromString($bytes)->toBinary()), bin2hex((string) stream_get_contents($target)));
+		fclose($source);
+		fclose($target);
+	}
+
 	public function testAStreamedJpegComposesByMaterializingItsDeferredScan()
 	{
 		$bytes = $this->jpegBytes();
