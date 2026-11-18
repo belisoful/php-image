@@ -159,7 +159,7 @@
 
 ## Mirror repository — keep in sync
 
-This repo and **[prado-image](https://github.com/pradosoft/prado-image)** (`../prado-image`) are mirrors of one another: the same library, a general standalone PHP library, the sibling being customized for the PRADO framework. They must remain **synchronized in features and function at all times**, including source, tests, the coverage/branch gates, CI workflows, and the `agents/` notes. A task here is not complete until the same change is applied to the sibling.
+This repo and **[prado-image](https://github.com/belisoful/prado-image)** (`../prado-image`) are mirrors of one another: the same library, a general standalone PHP library, the sibling being customized for the PRADO framework. They must remain **synchronized in features and function at all times**, including source, tests, the coverage/branch gates, CI workflows, and the `agents/` notes. A task here is not complete until the same change is applied to the sibling.
 
 Differences are limited to the host adaptation — see the table in [CLAUDE.md](CLAUDE.md) for the full mapping (`EXIF` here is `TEXIF` there; `Belisoful\Image\` maps to `Prado\IO\Image\`; SPL exceptions with inline messages map to Prado exceptions with `config/errorMessages.txt` keys). Everything else — class order, method names and signatures, test names, documented invariants — must match file for file.
 

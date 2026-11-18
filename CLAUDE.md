@@ -4,7 +4,7 @@ A standalone PHP library providing image container readers, metadata editing, an
 
 ## Mirror repository — keep in sync
 
-- This repo and **[prado-image](https://github.com/pradosoft/prado-image)** (`../prado-image`) are **mirrors of one another**: the same library, a general standalone PHP library, the sibling being customized for the PRADO framework. They must stay **synchronized in features and function at all times** — a change here is not finished until the equivalent change lands in the sibling, and vice versa. That covers source, tests, coverage/branch gates, CI, and the `agents/` notes.
+- This repo and **[prado-image](https://github.com/belisoful/prado-image)** (`../prado-image`) are **mirrors of one another**: the same library, a general standalone PHP library, the sibling being customized for the PRADO framework. They must stay **synchronized in features and function at all times** — a change here is not finished until the equivalent change lands in the sibling, and vice versa. That covers source, tests, coverage/branch gates, CI, and the `agents/` notes.
 - Only the host adaptation differs; behaviour, structure, and file-for-file layout must not:
 
 | Concern | prado-image | php-image |
@@ -14,7 +14,7 @@ A standalone PHP library providing image container readers, metadata editing, an
 | Interfaces | `I` prefix (`IPrivacyScrubbable`, `IImageGraphicsLibrary`) | `Interface` suffix (`PrivacyScrubbableInterface`, `ImageGraphicsLibraryInterface`) |
 | Base types | Prado's `TComponent`, `TEnumerable`, and the framework IO stream layer (`TStream`, `TLimitStream`, `Prado\IO\Compression\ICompressor`) | dependency-free equivalents: plain classes, class constants for enumerables, `Belisoful\Image\Stream\StreamIO`/`BinaryReader`, its own `CompressorInterface` |
 | Exceptions | Prado's `TIOException`/`TInvalidDataValueException`/`TInvalidDataTypeException` with keys in `config/errorMessages.txt` | SPL only (`\InvalidArgumentException`, `\UnexpectedValueException`, `\RuntimeException`), messages at the throw site |
-| Dependencies | `pradosoft/prado` (dev `^4.4@dev`); registers class map + error messages through `extra.prado` | `psr/http-message` only |
+| Dependencies | `pradosoft/prado` `^4.4` (a runtime requirement); registers class map + error messages through `extra.prado` | `psr/http-message` only |
 | Private spaces | `toReservedSpaceStream()`/`toFreeSpaceStream()` over the framework's stream decorators | `getReservedSpaces()`/`getFreeSpaces()` offsets; the caller windows the bytes |
 
 - **Version numbers are the same in both repos.** Only a sub-fix component may diverge (`v0.0.0.x` — the trailing `x`); the `major.minor.patch` prefix always matches, so a feature that bumps the version here bumps it there too.
