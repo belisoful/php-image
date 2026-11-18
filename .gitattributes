@@ -1,0 +1,14 @@
+# Kept out of the archives Composer installs (`--prefer-dist`) and GitHub's release
+# downloads: an installed package needs src/ and its licence, not the test suite,
+# the CI and tool configuration, or the agent notes.  A clone still has everything.
+/.github              export-ignore
+/agents               export-ignore
+/tests                export-ignore
+/.gitattributes       export-ignore
+/.gitignore           export-ignore
+/.php-cs-fixer.dist.php export-ignore
+/AGENTS.md            export-ignore
+/CLAUDE.md            export-ignore
+/phpstan.neon.dist    export-ignore
+/phpunit.xml          export-ignore
+/phpunit-branch.xml   export-ignore

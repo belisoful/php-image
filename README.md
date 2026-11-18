@@ -22,8 +22,9 @@ Every format here is supported in both directions — reading and writing.
   copied through untouched.
 - **TIFF** — a complete TIFF 6.0 engine, both byte orders and all twelve data types. Strip and
   tile data is relocated with recomputed offsets, so metadata edits are lossless. The raster
-  decodes too: uncompressed, PackBits, LZW and the CCITT fax codings, at 1–16 bits, striped or
-  tiled, across bilevel, grayscale, palette, RGB, CMYK, YCbCr and L\*a\*b\*.
+  decodes too: uncompressed, PackBits, LZW and the CCITT fax codings; unsigned samples of 1 to
+  32 bits, signed of 8 to 32, and IEEE floating point of 16 to 64; striped or tiled, across
+  bilevel, grayscale, palette, RGB, CMYK, YCbCr and L\*a\*b\*.
 - **PNG** — chunk-level, with the normative chunk order maintained and CRCs recomputed. Reads
   and writes every carrier PNG defines, plus the `Raw profile type 8bim` text chunk that
   Photoshop, ImageMagick and ExifTool use to exchange IPTC (PNG has no IPTC chunk of its own).
@@ -84,6 +85,13 @@ describes the picture itself, so what you get back is still a useful photo.
 ranges and bridged to the framework's reserved-space streams, so a consumer can edit around
 them with the same protection the writer itself applies.
 
+Files from strangers get two ceilings, because a decoder that sizes a buffer from what a file
+claims can be made to ask for gigabytes by a file of a few hundred bytes. A compressed PNG
+chunk inflates to at most `PNGImage::MaxInflatedSize` (64 MiB) and reads as absent past it, and
+the pure-PHP raster decoders refuse a TIFF or GIF frame that declares more pixels than
+`ImageGraphics::getMaxPixels()` (2^28, a 16384 by 16384 raster; `setMaxPixels()` moves it).
+Reading and rewriting metadata never decodes the pixels, so neither applies there.
+
 ## Streams
 
 Everything works with PSR-7 streams and PHP stream resources as well as strings and files —
@@ -120,7 +128,14 @@ $exif->getThumbnail();
 | `psr/http-message` `^1.1 \|\| ^2.0` | required | The PSR-7 `StreamInterface` every container and metadata class accepts and produces |
 | `ext-gd` | suggested | Thumbnail/caption conversion as `\GdImage` (the preferred `ImageGraphics` library); generates the unit-test fixtures |
 | `ext-imagick` | suggested | Thumbnail/caption conversion as `\Imagick` (the alternate `ImageGraphics` library) |
-| `ext-iconv` | suggested | IPTC charset conversion via `EscCharsetConverter`/`Utf8Converter` |
+| `ext-dom` | suggested | The DOM behind `XMP`; required for reading or writing XMP packets |
+| `ext-zlib` | suggested | Deflate for the compressed PNG chunks (`iCCP`, `zTXt`, compressed `iTXt`) |
+| `ext-iconv` | suggested | Charset conversion of IPTC text (`EscCharsetConverter`/`Utf8Converter`), the EXIF `UserComment`, and Photoshop Unicode strings |
+
+Nothing fails as an undefined function when `ext-zlib` or `ext-iconv` is missing. Without
+`ext-zlib` a compressed PNG chunk reads as absent and writing one throws; without `ext-iconv`
+text that needs converting is read unconverted (or empty, for UTF-16) and encoding a
+`UNICODE` or `JIS` comment throws.
 
 ## Installation
 
@@ -138,6 +153,11 @@ composer require belisoful/php-image
 | `APNGFrame` | One authored APNG frame: geometry (size, canvas offset), delay, disposal and blend operations, and the frame image data |
 | `WebPImage` | The WebP reader/writer: a RIFF container with dimensions from `VP8`/`VP8L`/`VP8X`, read-write `ICCP`/`EXIF`/`XMP ` chunks with their `VP8X` flags, and raster `getImage()`/`setImage()` |
 | `RIFFContainer` | The generic RIFF container walker (WAV, AVI, WebP): form type plus chunk id/size/offset/payload, with `setChunk()`/`addChunk()`/`prependChunk()`/`insertChunk()`/`setChunkInOrder()`/`removeChunk()` |
+| `RIFFList` | A RIFF `LIST` chunk, which is a chunk to whatever holds it and a chunk collection in its own right; nested lists parse on demand and recompose from their children |
+| `AVIImage` | The AVI metadata reader/writer: `LIST INFO` tags (`getInfo()`/`setInfoValue()`), XMP in `_PMX`, the `IDIT` timestamp, frame count and rate from `avih`, and a lazy read that streams past the media; no write ever moves `LIST movi` |
+| `BMFFFile` | The ISO base media reader/writer for HEIF, AVIF, MP4 and QuickTime (`getBrand()`): Exif and XMP as `meta` items or the Adobe `uuid` box, the ICC profile as a `colr` item property, items by type (`getItems()`/`addItem()`/`setItemData()`), and movie user data in both conventions (`getUserDataValue()`/`setUserDataValue()`); no write moves anything an offset addresses |
+| `BMFFBox` / `BMFFFileBox` / `BMFFItem` | The shared ISO box grammar (32-bit, 64-bit and run-to-the-end sizes, `uuid` types, depth-capped nesting), the file-level box that knows `meta` is a FullBox, and one `meta` item joining its `iinf` description to its `iloc` location |
+| `JXLImage` / `JXLSizeHeader` | The JPEG XL metadata reader/writer: `Exif`, `xml ` (XMP) and `jumb` boxes, the codestream assembled from `jxlc` or the `jxlp` parts, a bare codestream promoted to a container on the first write, and the pixel dimensions decoded from the codestream's bit-packed `SizeHeader` |
 | `GIFImage` | The GIF87a/GIF89a reader/writer: logical screen descriptor, global color table, the ordered frame and extension stream, loop count, comments, read-write XMP (`XMP DataXMP`) and ICC (`ICCRGBG1012`), raster `getImage()`/`setImage()`, and byte-faithful composition |
 | `GIFFrame` | One authored GIF frame: sub-rectangle, interlace, local color table, LZW pixel indexes, and the graphic control fields (delay, disposal, user input, transparency) |
 | `GIFExtension` | One GIF extension block, with its sub-block framing and application identity preserved verbatim, and the raw-payload mode (magic trailer) the XMP packet needs |
@@ -165,7 +185,7 @@ composer require belisoful/php-image
 | `EXIFAudio` | The Exif WAVE audio file: the `exif` LIST attribute chunks, `fmt `/duration accessors, and lossless rewriting of the audio |
 | `PrintIM` | The Print Image Matching block codec (byte-order aware, Panasonic quirk handled) |
 | `PictureInfo` | The legacy APP12 picture-info text with vendor signatures and `Key=Value` field parsing |
-| `ImageGraphics` | The graphics-library seam: routes RGB24 and CMYK export/import, decode, JPEG/PNG/WebP encode, ICC profile read/attach/transform, resample, black-and-white reduction, and palette quantization to the backend of the image's own library (or of the requested mode), with a settable default, a `supports()` capability query, and `getCapableLibrary()` |
+| `ImageGraphics` | The graphics-library seam: routes RGB24 and CMYK export/import, decode, JPEG/PNG/WebP encode, ICC profile read/attach/transform, resample, black-and-white reduction, and palette quantization to the backend of the image's own library (or of the requested mode), with a settable default, a `supports()` capability query, `getCapableLibrary()`, and the pixel ceiling the raster decoders honour (`getMaxPixels()`/`setMaxPixels()`) |
 | `ICCProfile` | The editable ICC profile: every header field readable and writable, the profile-id digest, the tag table with typed reads and writes (text/`mluc` localized text, `XYZ `, `curv`/`para` curves, `sf32` arrays, colorant matrix, tone curves), tag removal and aliasing, and offset-recomputing composition |
 | `ICCTransform` | The pure-PHP color transform between two matrix/TRC profiles, giving GD a color-managed conversion it has no API for |
 | `ImageGraphicsLibraryInterface` | The contract one graphics library implements: the raster operations, `encode()` (JPEG/PNG/WebP), the ICC profile pair, and `supports()` for the capability differences between backends |
@@ -532,6 +552,62 @@ $packed = (new PackBitsCompressor())->compress($scanline);
 
 Each codec also has an incremental engine — `LZWCompressor::encoder()`/`decoder()` (and the same on `PackBitsCompressor` and `HorizontalPredictor`) return a `StreamCodec` you feed with `add()` and flush with `finish()`, like PHP's own `deflate_init`/`inflate_init`. The whole-string `compress()`/`decompress()` are thin drivers of that engine, so each algorithm exists once; the engine is self-contained enough to drive a native `php_user_filter` (the library ships none of its own).
 
+### AVI: tags, XMP, and the recording date
+
+```php
+use Belisoful\Image\AVIImage;
+
+$avi = AVIImage::fromFile('clip.avi');                // or fromStreamLazy() to skip the media
+[$avi->getWidth(), $avi->getHeight(), $avi->getTotalFrames()];
+
+$avi->getInfoValue(AVIImage::InfoArtist);             // a LIST INFO tag, or null
+$avi->setInfoValue(AVIImage::InfoName, 'Harbour at dawn');
+$avi->getDigitizationTime();                          // the IDIT chunk
+$avi->setXMP($xmp);                                   // the _PMX chunk
+$avi->save('clip-out.avi');                           // LIST movi stays where the index expects it
+```
+
+AVI has no Exif, ICC, or IPTC carrier, so `setEXIF()`, `setICCProfile()` and `setIPTC()` throw.
+
+### HEIF, AVIF, MP4 and QuickTime
+
+```php
+use Belisoful\Image\BMFFFile;
+
+$heic = BMFFFile::fromFile('photo.heic');
+$heic->getBrand();                                    // 'heic', 'avif', 'mp42', 'qt  ', ...
+$exif = $heic->getEXIF();                             // the Exif meta item
+$heic->getICCProfile();                               // the colr item property
+
+$exif->setValueByName('Artist', 'A. Photographer');
+$heic->setEXIF($exif);                                // appended in a fresh mdat; iloc repointed
+$heic->save('photo-out.heic');
+
+$movie = BMFFFile::fromFile('clip.mp4');
+$movie->getUserDataValue(BMFFFile::KeyTitle);         // iTunes tag or QuickTime text atom
+$movie->setUserDataValue(BMFFFile::KeyTitle, 'Harbour at dawn');
+$movie->setXMP($xmp);                                 // the Adobe uuid box
+```
+
+A write that cannot be made without moving something an absolute offset addresses throws
+rather than corrupting the file.
+
+### JPEG XL
+
+```php
+use Belisoful\Image\JXLImage;
+
+$jxl = JXLImage::fromFile('image.jxl');               // a container or a bare codestream
+[$jxl->getWidth(), $jxl->getHeight()];                // from the codestream's SizeHeader
+$jxl->getIsBareCodestream();
+
+$jxl->setXMP($xmp);                                   // a bare codestream becomes a container
+$jxl->setEXIF($exif);
+$jxl->save('image-out.jxl');
+
+$jxl->getHasBrotliCarrier(JXLImage::ExifBox);         // a brob box: recognized, not decompressed
+```
+
 ### RIFF containers directly
 
 ```php
@@ -563,9 +639,9 @@ XDEBUG_MODE=coverage vendor/bin/phpunit --testsuite unit --coverage-clover build
 php tests/test_tools/coverage-gate.php build/logs/clover.xml
 ```
 
-**Branches** (99.70%) are checked on pull requests and on main rather than on every push,
+**Branches** (99.7%) are checked on pull requests and on main rather than on every push,
 because instrumenting every branch takes far longer than the suite itself. It is the stronger measure: a covered line still hides a
-decision that only ever goes one way. The nineteen branches that remain are unreachable by
+decision that only ever goes one way. The twenty or so branches that remain (the count shifts by one or two with the PHP version) are unreachable by
 construction — mostly edges PHP emits itself, such as the implicit `UnhandledMatchError` of a
 `match` whose subject is already range-checked:
 
@@ -575,7 +651,7 @@ XDEBUG_MODE=coverage php -d memory_limit=10G vendor/bin/phpunit --testsuite unit
 php -d memory_limit=8G tests/test_tools/branch-gate.php build/logs/coverage.php
 ```
 
-Tests cover the format readers (dimensions and invalid-input rejection for JPEG/PNG/WebP, all three WebP variants, PNG ICC inflation); the **read-write-every-carrier matrix** across JPEG/PNG/WebP/TIFF/GIF (each container round-trips or explicitly refuses every metadata carrier its format defines, including the raster `getImage()`/`setImage()` paths); the GIF container (byte-faithful round trips of an animation exercising the whole standard, frame and extension editing, interlace, loop count, application-identity case, quantized import, and malformed-block rejection — cross-checked by decoding the composed files with GD and ImageMagick); the TIFF raster forms (tiles, planar, every bit depth, and the CMYK/YCbCr/Lab photometrics); the **private-spaces bridge** (reserved/free-space stream views that keep the maker notes byte-identical under Clip/Fail/Skip writes); the ICC profile coder and its pure-PHP color transform; the full XMP value grammar and schema registry; every makernote maker variant; the tag-interpretation decoders; the Photoshop resource decoders; the IPTC record set (parsing, tag-name and id access, validation/coercion, re-encode round trips); the Photoshop 8BIM codec (string and stream detection, IPTC decode/encode); the graphics seam (RGB and CMYK round trips, JPEG/PNG/WebP encode/decode, resampling, mono reduction, palette quantization, and the capability query in both libraries); and the compression codecs (LZW, GIF LZW, PackBits, CCITT fax, and predictor round trips plus their incremental `StreamCodec` engines across chunk sizes, including a native `php_user_filter` driving one). Test images and ICC profiles are generated in memory, so the repository carries no binary fixtures; the Imagick-path tests skip cleanly where `ext-imagick` is absent, and one CI job runs the whole suite without it to keep that promise honest. Test data is deterministic — `PseudoRandomBytes` stands in for `random_bytes()` — because random input makes both assertions and coverage vary from run to run.
+Tests cover the format readers (dimensions and invalid-input rejection for JPEG/PNG/WebP, all three WebP variants, PNG ICC inflation); the **read-write-every-carrier matrix** across JPEG/PNG/WebP/TIFF/GIF/AVI/ISO BMFF/JPEG XL (each container round-trips or explicitly refuses every metadata carrier its format defines, including the raster `getImage()`/`setImage()` paths); the GIF container (byte-faithful round trips of an animation exercising the whole standard, frame and extension editing, interlace, loop count, application-identity case, quantized import, and malformed-block rejection — cross-checked by decoding the composed files with GD and ImageMagick); the TIFF raster forms (tiles, planar, every bit depth, and the CMYK/YCbCr/Lab photometrics); the **private-spaces bridge** (reserved/free-space stream views that keep the maker notes byte-identical under Clip/Fail/Skip writes); the ICC profile coder and its pure-PHP color transform; the full XMP value grammar and schema registry; every makernote maker variant; the tag-interpretation decoders; the Photoshop resource decoders; the IPTC record set (parsing, tag-name and id access, validation/coercion, re-encode round trips); the Photoshop 8BIM codec (string and stream detection, IPTC decode/encode); the graphics seam (RGB and CMYK round trips, JPEG/PNG/WebP encode/decode, resampling, mono reduction, palette quantization, and the capability query in both libraries); and the compression codecs (LZW, GIF LZW, PackBits, CCITT fax, and predictor round trips plus their incremental `StreamCodec` engines across chunk sizes, including a native `php_user_filter` driving one). Test images and ICC profiles are generated in memory, so the repository carries no binary fixtures; the Imagick-path tests skip cleanly where `ext-imagick` is absent, and one CI job runs the whole suite without it to keep that promise honest. Test data is deterministic — `PseudoRandomBytes` stands in for `random_bytes()` — because random input makes both assertions and coverage vary from run to run.
 
 > **Note:** the library consumes PSR-7 streams but ships no implementation of its own. `Belisoful\Image\Stream\StreamIO` holds static helpers that read from, write to, and rewind either a `StreamInterface` or a raw PHP stream resource, and `BinaryReader` is a small offset-driven typed reader (not a stream) for the lazy metadata scan. The `BitReader`/`BitWriter` bit-level IO works on strings, and each compression codec pairs a whole-string `CompressorInterface` with an incremental `StreamCodec` engine.
 
