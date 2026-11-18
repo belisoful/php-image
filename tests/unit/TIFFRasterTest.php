@@ -1,6 +1,7 @@
 <?php
 
 use Belisoful\Image\ImageGraphics;
+use Belisoful\Image\TIFF\TIFFDataType;
 use Belisoful\Image\TIFFImage;
 
 class TIFFRasterTest extends PHPUnit\Framework\TestCase
@@ -87,5 +88,38 @@ class TIFFRasterTest extends PHPUnit\Framework\TestCase
 		$exif->getIfd0()->setTagValues(TIFFImage::HeightTag, Belisoful\Image\TIFF\TIFFDataType::ULong, [10]);
 		$tiff = TIFFImage::fromString($exif->getTiff()->toBinary());
 		self::assertFalse($tiff->getImage());
+	}
+	public function testDecodingARasterOverThePixelCeilingIsRefused()
+	{
+		// The file is a few hundred bytes and claims 50000 by 50000.  The decoder sizes
+		// its buffers from those tags, so the claim is refused before anything is allocated.
+		$image = imagecreatetruecolor(4, 4);
+		$tiff = TIFFImage::fromString(TIFFImage::fromImage($image, TIFFImage::CompressionNone)->toBinary());
+		$ifd = $tiff->getEXIF()->getIfd0();
+		$ifd->setTagValues(256, TIFFDataType::ULong, [50000]);
+		$ifd->setTagValues(257, TIFFDataType::ULong, [50000]);
+		$claimed = TIFFImage::fromString($tiff->toBinary());
+		self::assertSame(50000, $claimed->getWidth());
+		try {
+			$claimed->getImage();
+			self::fail('a raster over the ceiling must be refused');
+		} catch (\UnexpectedValueException $e) {
+			self::assertStringContainsString('exceeds the ceiling', $e->getMessage());
+		}
+
+		// The ceiling is the caller's to move: an honest raster decodes at or under it.
+		$honest = TIFFImage::fromImage($image, TIFFImage::CompressionNone);
+		try {
+			ImageGraphics::setMaxPixels(15);
+			try {
+				$honest->getImage();
+				self::fail('a 4x4 raster is over a ceiling of 15 pixels');
+			} catch (\UnexpectedValueException) {
+			}
+			ImageGraphics::setMaxPixels(16);
+			self::assertNotFalse($honest->getImage());
+		} finally {
+			ImageGraphics::setMaxPixels(null);
+		}
 	}
 }

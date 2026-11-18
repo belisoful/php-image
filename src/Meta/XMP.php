@@ -225,11 +225,14 @@ class XMP implements PrivacyScrubbableInterface
 	/**
 	 * Parses an XMP packet (raw RDF/XML, with or without the xpacket wrapper).
 	 * @param string $xml The packet text.
-	 * @return false|static The parsed XMP, or false when the XML does not parse or
-	 *   carries no rdf:RDF element.
+	 * @return false|static The parsed XMP, or false when the text is empty, the XML does
+	 *   not parse, or it carries no rdf:RDF element.
 	 */
 	public static function parse(string $xml): false|static
 	{
+		if ($xml === '') {
+			return false;   // DOMDocument::loadXML() throws a \ValueError on an empty source
+		}
 		$dom = new \DOMDocument('1.0', 'UTF-8');
 		$useErrors = libxml_use_internal_errors(true);
 		$loaded = $dom->loadXML($xml);

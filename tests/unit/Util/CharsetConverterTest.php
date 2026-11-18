@@ -65,4 +65,25 @@ class CharsetConverterTest extends PHPUnit\Framework\TestCase
 		self::assertSame('UTF-8', $plain);
 		self::assertNull($lang);
 	}
+
+	public function testWithoutIconvTextPassesThroughUnconverted()
+	{
+		// ext-iconv is only suggested.  Without it nothing can be converted, so a string
+		// passes through as the bytes it is, which is what a failed conversion leaves.
+		self::assertSame("caf\xE9", Utf8ConverterWithoutIconv::toUTF8("caf\xE9", 'ISO-8859-1'));
+		self::assertSame("caf\u{E9}", Utf8ConverterWithoutIconv::fromUTF8("caf\u{E9}", 'ISO-8859-1'));
+		self::assertSame('plain', Utf8ConverterWithoutIconv::toUTF8('plain', 'UTF-8'));
+	}
+}
+
+/**
+ * The converter on an installation without ext-iconv: the extension check is the seam the
+ * conversion routes through, so overriding it stands in for its absence.
+ */
+class Utf8ConverterWithoutIconv extends Utf8Converter
+{
+	protected static function hasIconv(): bool
+	{
+		return false;
+	}
 }

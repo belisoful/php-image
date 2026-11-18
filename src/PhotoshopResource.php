@@ -325,7 +325,17 @@ class PhotoshopResource
 		$pos += 4;
 		$utf16 = substr($this->_data, $pos, $length * 2);
 		$pos += $length * 2;
-		$decoded = @iconv('UTF-16BE', 'UTF-8//IGNORE', $utf16);
+		$decoded = $this->hasIconv() ? @iconv('UTF-16BE', 'UTF-8//IGNORE', $utf16) : false;
 		return rtrim($decoded === false ? '' : $decoded, "\0");
+	}
+
+	/**
+	 * Indicates whether ext-iconv, which is suggested rather than required, is loaded.
+	 * Without it a Unicode string reads as empty, as one that does not convert does.
+	 * @return bool Whether charset conversion is available.
+	 */
+	protected function hasIconv(): bool
+	{
+		return function_exists('iconv');
 	}
 }

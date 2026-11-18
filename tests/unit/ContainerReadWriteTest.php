@@ -512,6 +512,98 @@ class ContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		self::assertSame('Deflated', $png->getIPTC()[IPTCTags::ObjectName]);
 	}
 
+	public function testPngEmptyOrCutShortXmpTextReadsAsAbsent()
+	{
+		// An iTXt chunk with the XMP keyword and no packet behind it: an empty text, and a
+		// payload cut off before or inside its two flag bytes.  Each reads as absent, and
+		// the privacy scrub, which asks every carrier, passes over it.
+		$cases = ['empty text' => "\x00\x00" . "\x00" . "\x00", 'no flag bytes' => '', 'one flag byte' => "\x00"];
+		foreach ($cases as $label => $rest) {
+			$png = PNGImage::fromString($this->png());
+			$payload = PNGImage::XmpKeyword . "\x00" . $rest;
+			$png->setChunk(new ImageChunk('iTXt', strlen($payload), 0, $payload));
+			self::assertNull($png->getXMP(), $label);
+			self::assertSame(0, $png->clearPrivateData(), $label);
+		}
+	}
+
+	public function testPngCompressedChunksInflateOnlyUpToTheCeiling()
+	{
+		// Each of the three compressed carriers inflates past the probe's 1 KiB ceiling:
+		// the stock class reads them, the probe reads them as absent rather than
+		// allocating whatever the stream asks for.
+		$profile = str_repeat("\x00", 4096);
+		$packet = str_repeat('x', 4096);
+		$png = PNGImage::fromString($this->png());
+		$png->setICCProfile($profile);                                  // iCCP
+		$iptc = $this->iptc('Big');
+		$iptc[IPTCTags::CaptionAbstract] = str_repeat('A', 600);
+		$png->setIPTC($iptc);                                           // zTXt, as hexadecimal
+		$payload = PNGImage::XmpKeyword . "\x00" . "\x01\x00" . "\x00" . "\x00" . gzcompress($packet);
+		$png->addChunk(new ImageChunk('iTXt', strlen($payload), 0, $payload));
+		$bytes = $png->toBinary();
+		self::assertLessThan(1024, strlen($bytes), 'the file itself is small');
+
+		$full = PNGImage::fromString($bytes);
+		self::assertSame($profile, $full->getICCProfile());
+		self::assertSame(str_repeat('A', 600), $full->getIPTC()[IPTCTags::CaptionAbstract]);
+		self::assertSame($packet, $full->getXmpText());
+
+		$capped = TSmallInflatePNG::fromString($bytes);
+		self::assertNull($capped->getICCProfile());
+		self::assertNull($capped->getIPTC());
+		self::assertNull($capped->getXmpText());
+
+		self::assertSame(64 * 1024 * 1024, PNGImage::MaxInflatedSize);
+	}
+
+	public function testPngWithoutZlibReadsCompressedChunksAsAbsentAndRefusesToWriteThem()
+	{
+		$png = PNGImage::fromString($this->png());
+		$png->setICCProfile(ICCProfileBuilder::sRgb());
+		$png->setIPTC($this->iptc('Deflated'));
+		$payload = PNGImage::XmpKeyword . "\x00" . "\x01\x00" . "\x00" . "\x00" . gzcompress('a packet');
+		$png->addChunk(new ImageChunk('iTXt', strlen($payload), 0, $payload));
+		$bytes = $png->toBinary();
+
+		// ext-zlib is only suggested.  Without it a compressed chunk cannot be read...
+		$bare = TNoZlibPNG::fromString($bytes);
+		self::assertNull($bare->getICCProfile());
+		self::assertNull($bare->getIPTC());
+		self::assertNull($bare->getXmpText());
+
+		// ...and cannot be written, which is said rather than failing as an undefined
+		// function; the refusal leaves the file as it was.
+		foreach ([fn () => $bare->setICCProfile(ICCProfileBuilder::sRgb()), fn () => $bare->setIPTC($this->iptc('Other'))] as $i => $write) {
+			try {
+				$write();
+				self::fail("write $i must be refused without ext-zlib");
+			} catch (\RuntimeException) {
+			}
+		}
+		self::assertSame(bin2hex($bytes), bin2hex($bare->toBinary()));
+
+		// A carrier that is not compressed needs no zlib.
+		$bare->setXmpText('plain');
+		self::assertSame('plain', $bare->getXmpText());
+	}
+
+	public function testWebPEmptyXmpChunkReadsAsAbsent()
+	{
+		// The chunk is there and holds nothing: no packet, and nothing for the scrub to trip on.
+		$webp = WebPImage::fromString($this->webp());
+		$webp->setXMP($this->xmp());
+		$bytes = $webp->toBinary();
+		$at = strpos($bytes, 'XMP ');
+		$length = unpack('V', substr($bytes, $at + 4, 4))[1];
+		$emptied = substr($bytes, 0, $at) . 'XMP ' . pack('V', 0) . substr($bytes, $at + 8 + $length + ($length & 1));
+		$emptied = substr_replace($emptied, pack('V', strlen($emptied) - 8), 4, 4);
+
+		$round = WebPImage::fromString($emptied);
+		self::assertNull($round->getXMP());
+		self::assertSame(0, $round->clearPrivateData());
+	}
+
 	public function testPngKeepsTheResourceBlockWhenOnlyItsIptcIsDropped()
 	{
 		// The 8BIM block carries more than IPTC; dropping the record set must redact it
@@ -1009,5 +1101,23 @@ class ContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
 		self::assertSame('Container test', $round->getXMP()?->getLangAltValue(XMP::NS_DC, 'title'));
 		self::assertSame([64, 48], [$round->getWidth(), $round->getHeight()]);
+	}
+}
+
+/** A PNG whose compressed chunks may inflate to a kibibyte, to prove the ceiling cheaply. */
+class TSmallInflatePNG extends PNGImage
+{
+	public const MaxInflatedSize = 1024;
+}
+
+/**
+ * A PNG on an installation without ext-zlib: the extension check is the seam the
+ * compressed-chunk codec routes through, so overriding it stands in for its absence.
+ */
+class TNoZlibPNG extends PNGImage
+{
+	protected function hasZlib(): bool
+	{
+		return false;
 	}
 }

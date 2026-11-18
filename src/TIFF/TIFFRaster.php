@@ -14,6 +14,7 @@ use Belisoful\Image\Compression\CCITTFaxCompressor;
 use Belisoful\Image\Compression\HorizontalPredictor;
 use Belisoful\Image\Compression\LZWCompressor;
 use Belisoful\Image\Compression\PackBitsCompressor;
+use Belisoful\Image\ImageGraphics;
 
 /**
  * TIFFRaster class.
@@ -101,6 +102,8 @@ class TIFFRaster
 	 * @param int $height The image height in pixels.
 	 * @param bool $bigEndian Whether the document is big-endian (MM), the order its
 	 *   multi-byte samples are stored in.
+	 * @throws \UnexpectedValueException When the declared dimensions exceed the
+	 *   {@see ImageGraphics::getMaxPixels() pixel ceiling}.
 	 * @return ?string The RGB pixel bytes, or null when the raster form is unsupported.
 	 */
 	public static function toRgb(TIFFIfd $ifd, int $width, int $height, bool $bigEndian): ?string
@@ -108,6 +111,7 @@ class TIFFRaster
 		if ($width < 1 || $height < 1) {
 			return null;
 		}
+		ImageGraphics::assertPixelCount($width, $height);   // before any buffer is sized from them
 		$geometry = static::readGeometry($ifd, $width, $height, $bigEndian);
 		if ($geometry === null) {
 			return null;

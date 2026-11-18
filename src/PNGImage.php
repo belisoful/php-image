@@ -66,6 +66,15 @@ class PNGImage extends ImageFile
 	public const IptcKeyword = 'Raw profile type iptc';
 
 	/**
+	 * @var int The most bytes a compressed chunk (`iCCP`, `zTXt`, a compressed `iTXt`) may
+	 *   inflate to: 64 MiB.  Deflate reaches ratios near 1000:1, so without a ceiling a
+	 *   chunk of a few hundred kilobytes exhausts the memory limit, which is a fatal error
+	 *   no caller can catch.  A chunk that would inflate past this reads as undecodable.
+	 *   The accessors resolve it late (`static::`), so a subclass may raise or lower it.
+	 */
+	public const MaxInflatedSize = 0x4000000;
+
+	/**
 	 * @var string[] The chunk order the PNG specification requires: the header, the
 	 *   colour-space chunks before any palette, the palette and its dependents, then the
 	 *   ancillary and textual chunks, then the consecutive image data and the end marker.
@@ -274,7 +283,7 @@ class PNGImage extends ImageFile
 		if ($nul === false || $nul + 2 > strlen($payload)) {
 			return null;
 		}
-		$profile = @gzuncompress(substr($payload, $nul + 2));   // skip the name, NUL, and method byte
+		$profile = $this->inflate(substr($payload, $nul + 2));   // skip the name, NUL, and method byte
 		return $profile === false ? null : $profile;
 	}
 
@@ -289,7 +298,7 @@ class PNGImage extends ImageFile
 			$this->removeChunk(PNGChunkType::ICCProfile);
 			return;
 		}
-		$payload = self::ICCProfileName . "\x00" . "\x00" . gzcompress($profile);
+		$payload = self::ICCProfileName . "\x00" . "\x00" . $this->deflate($profile);
 		$this->setChunk(new ImageChunk(PNGChunkType::ICCProfile, strlen($payload), 0, $payload));
 	}
 
@@ -430,14 +439,50 @@ class PNGImage extends ImageFile
 	 */
 	protected function setRawProfile(string $keyword, string $name, ?string $bytes): void
 	{
-		$this->removeTextChunk($keyword);
 		if ($bytes === null) {
+			$this->removeTextChunk($keyword);
 			return;
 		}
 		$text = "\n" . $name . "\n" . sprintf('%8d', strlen($bytes)) . "\n"
 			. rtrim(chunk_split(bin2hex($bytes), 72, "\n"), "\n") . "\n";
-		$payload = $keyword . "\x00" . "\x00" . gzcompress($text);
+		// Deflated before the old chunk goes, so a refusal leaves the file as it was.
+		$payload = $keyword . "\x00" . "\x00" . $this->deflate($text);
+		$this->removeTextChunk($keyword);
 		$this->addChunk(new ImageChunk(PNGChunkType::CompressedText, strlen($payload), 0, $payload));
+	}
+
+	/**
+	 * Indicates whether ext-zlib, which is suggested rather than required, is loaded.
+	 * @return bool Whether compressed chunks can be inflated and deflated.
+	 */
+	protected function hasZlib(): bool
+	{
+		return function_exists('gzuncompress');
+	}
+
+	/**
+	 * Inflates the zlib stream of a compressed chunk, to at most {@see MaxInflatedSize}.
+	 * @param string $data The zlib stream.
+	 * @return false|string The inflated bytes, or false when they cannot be had: a corrupt
+	 *   stream, one that inflates past the ceiling, or no ext-zlib to inflate with.
+	 */
+	protected function inflate(string $data): false|string
+	{
+		return $this->hasZlib() ? @gzuncompress($data, static::MaxInflatedSize) : false;
+	}
+
+	/**
+	 * Deflates the payload of a compressed chunk into a zlib stream.
+	 * @param string $data The bytes to compress.
+	 * @throws \RuntimeException When ext-zlib is not loaded.
+	 * @return string The zlib stream.
+	 */
+	protected function deflate(string $data): string
+	{
+		if (!$this->hasZlib()) {
+			throw new \RuntimeException('Writing a compressed PNG chunk requires the zlib extension.');
+		}
+		return gzcompress($data);
 	}
 
 	/**
@@ -460,7 +505,7 @@ class PNGImage extends ImageFile
 				return $rest;
 			}
 			if ($type === PNGChunkType::CompressedText) {
-				$inflated = @gzuncompress(substr($rest, 1));   // one compression-method byte
+				$inflated = $this->inflate(substr($rest, 1));   // one compression-method byte
 				return $inflated === false ? null : $inflated;
 			}
 			$text = $this->iTxtText($rest);
@@ -533,6 +578,9 @@ class PNGImage extends ImageFile
 	protected function iTxtText(string $rest): ?string
 	{
 		$compressed = ord($rest[0] ?? "\0");
+		if (strlen($rest) < 2) {
+			return null;   // cut off before the compression flag and method
+		}
 		$position = strpos($rest, "\0", 2);
 		if ($position === false) {
 			return null;
@@ -545,7 +593,7 @@ class PNGImage extends ImageFile
 		if ($compressed !== 1) {
 			return $text;
 		}
-		$inflated = @gzuncompress($text);
+		$inflated = $this->inflate($text);
 		return $inflated === false ? null : $inflated;
 	}
 

@@ -917,12 +917,12 @@ class ICCProfile
 			if ($count === 0) {
 				return ['type' => 'identity'];
 			}
+			if (strlen($content) < 12 + $count * 2) {
+				return null;
+			}
 			if ($count === 1) {
 				// One entry is a u8Fixed8 gamma.
 				return ['type' => 'gamma', 'gamma' => unpack('n', substr($content, 12, 2))[1] / 256];
-			}
-			if (strlen($content) < 12 + $count * 2) {
-				return null;
 			}
 			$samples = array_values(unpack('n' . $count, substr($content, 12, $count * 2)));
 			return ['type' => 'table', 'samples' => array_map(fn (int $v): float => $v / 65535, $samples)];

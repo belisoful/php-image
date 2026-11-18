@@ -438,10 +438,13 @@ class GIFFrame
 	/**
 	 * Decodes the pixel indexes: one palette-index byte per pixel, row-major, with the
 	 * four-pass interlace undone when the frame is interlaced.
+	 * @throws \UnexpectedValueException When the frame's dimensions exceed the
+	 *   {@see ImageGraphics::getMaxPixels() pixel ceiling}.
 	 * @return string The pixel indexes.
 	 */
 	public function getPixels(): string
 	{
+		ImageGraphics::assertPixelCount($this->_width, $this->_height);   // short data is padded to them
 		$pixels = GIFLZWCompressor::decompress($this->getLzwData(), $this->_minCodeSize);
 		$expected = $this->_width * $this->_height;
 		if (strlen($pixels) > $expected) {

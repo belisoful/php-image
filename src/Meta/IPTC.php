@@ -564,14 +564,24 @@ class IPTC implements \IteratorAggregate, \ArrayAccess, \Countable, PrivacyScrub
 		if ($metaType === self::TYPE_UINT8) {
 			return ord($value);
 		}
+		// A numeric dataset shorter than its type reads as the big-endian number its bytes
+		// spell, so a truncated one is a small value rather than an out-of-range offset.
 		if ($metaType === self::TYPE_UINT16) {
+			$value = str_pad($value, 2, "\0", STR_PAD_LEFT);
 			return (ord($value[0]) << 8) | ord($value[1]);
 		}
 		if ($metaType === self::TYPE_UINT32) {
+			$value = str_pad($value, 4, "\0", STR_PAD_LEFT);
 			return (ord($value[0]) << 24) | (ord($value[1]) << 16) | (ord($value[2]) << 8) | ord($value[3]);
 		}
 		if ($record === 1 && $tagid === 90) { // CodedCharacterSet
-			return $charset = (string) EscCharsetConverter::decodeEscapeCharset($value);
+			$name = EscCharsetConverter::decodeEscapeCharset($value);
+			if ($name === null) {
+				// A designation this library cannot name is kept verbatim, so a rewrite does
+				// not lose it, and the text that follows stays in the fallback charset.
+				return $value;
+			}
+			return $charset = $name;
 		}
 		if ($record > 1 && $metaType === self::TYPE_STRING) {
 			return Utf8Converter::toUTF8($value, $charset);
@@ -631,8 +641,11 @@ class IPTC implements \IteratorAggregate, \ArrayAccess, \Countable, PrivacyScrub
 			$singleValue = (self::TAG_MAP[$id][self::PROPERTY_KEY] & self::PROP_REPEATABLE) === 0;
 			foreach (is_array($values) ? $values : [$values] as $value) {
 				if ($id === IPTCTags::CodedCharacterSet) {
-					$charset = $value;
-					$value = EscCharsetConverter::encodeEscapeCharset($value);
+					$escape = EscCharsetConverter::encodeEscapeCharset((string) $value);
+					if ($escape !== null) {
+						$charset = $value;
+						$value = $escape;
+					}   // else an unrecognized designation: written back as it was read
 				}
 				$result .= self::tagBinary($id, $value, $charset);
 				if ($singleValue) {

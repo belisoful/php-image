@@ -42,6 +42,11 @@ so.
   rewrite updates to what it actually wrote.
 - **A shared ISO BMFF box model** (`BMFFBox`), lifted out of the JUMBF reader: the 32-bit
   size, the 64-bit and run-to-the-end forms, `uuid` user types and depth-capped nesting.
+- **A pixel ceiling** on the pure-PHP raster decoders: `ImageGraphics::getMaxPixels()` and
+  `setMaxPixels()`, 2^28 by default (a 16384 by 16384 raster). `TIFFImage::getImage()` and
+  `GIFFrame::getPixels()` size their buffers from the dimensions a file states, so a TIFF of
+  176 bytes claiming 50000 by 50000 asked for 7.5 GB and died of it, uncatchably. A raster over
+  the ceiling now throws before anything is allocated.
 - CI now covers PHP 8.4 and 8.5 alongside 8.2 and 8.3.
 
 ### Fixed
@@ -50,6 +55,29 @@ so.
   Microsoft's `MP:RegionInfo`, which name the people pictured) are now removed under `Author`;
   and `clearPrivateData()` on a JPEG or GIF drops the trailing data for any category, since an
   MPF secondary image carries its own EXIF, GPS included, that no carrier scrub reached.
+- Malformed metadata raised PHP errors where it should have read as absent, each found by
+  mutating valid files:
+  - `XMP::parse('')` threw a `\ValueError`, so an empty carrier (a zero-length WebP `XMP `
+    chunk, a PNG `iTXt` with no text) broke `getXMP()` and `clearPrivateData()`. It returns
+    false, as documented.
+  - An IPTC block whose `CodedCharacterSet` (1:90) was an escape sequence this library has no
+    name for, or was empty, parsed and then could not be written: `toBinary()` threw a
+    `\TypeError`, and with it every save of the file. The designation is now kept verbatim and
+    written back as read, and the text after it stays in the fallback charset.
+  - An IPTC numeric dataset shorter than its type read past the end of its value. It reads as
+    the number its bytes spell. IPTC text that is not in its declared charset raised an iconv
+    notice; it is left unconverted, quietly.
+  - A PNG `iTXt` chunk cut off before its two flag bytes threw a `\ValueError`.
+  - `EXIF::getLatitude()`/`getLongitude()` warned on a reference tag stored as numbers, and
+    `getGpsTimestamp()` threw a `\ValueError` on a date stamp with bytes after its terminating
+    NUL. The first reads unsigned; the second ends the date at the NUL.
+  - `EXIFTags::textValue()` threw a `\TypeError` on an enumerated tag stored as a rational,
+    and warned on a text tag stored as rationals or a `UserComment` stored as numbers. A field
+    in a type its tag does not take renders as the numbers it holds.
+  - `ICCProfile::decodeCurve()` warned on a `curv` gamma with no value after its count.
+- A compressed PNG chunk inflated without limit: a 400 KB file with an `iCCP` chunk inflating
+  to 400 MB exhausted the memory limit in `getICCProfile()`. `iCCP`, `zTXt` and compressed
+  `iTXt` now inflate to at most `PNGImage::MaxInflatedSize` (64 MiB) and read as absent past it.
 - Appending an item to an `iinf` table too short to hold its own version and entry count wrote
   a malformed table. The count is padded out rather than special cased, so a truncated table
   is rewritten as a valid one.
@@ -65,13 +93,23 @@ so.
 - A Float field's text showed its widening to a double (`0.10000000149011612` for a stored
   0.1). `EXIFTags::textValue()` now renders the shortest decimal that packs to the same four
   bytes.
-- `GIFLZWCompressor::assertMinCodeSize()` threw `\RuntimeException` while its docblock promised
+- (php-image only) `GIFLZWCompressor::assertMinCodeSize()` threw `\RuntimeException` while its docblock promised
   `\InvalidArgumentException` — a different SPL hierarchy, so a caller catching the
   documented type would have missed the throw. It now throws `\UnexpectedValueException`,
   matching every other throw in the file and both public docblocks.
 
 ### Changed
 
+- **A missing suggested extension no longer fails as an undefined function.** Without
+  `ext-zlib` a compressed PNG chunk reads as absent and writing one throws; without `ext-iconv`
+  text that needs converting is read unconverted (or empty, for UTF-16) and encoding a
+  `UNICODE` or `JIS` coded string throws rather than writing it empty. The checks are small
+  overridable methods (`hasZlib()`, `hasIconv()`), which is how the tests stand in for an
+  installation without the extension. In prado-image the IPTC check sits in `TIPTC`, since the
+  converter it guards is the framework's; in php-image it sits in `Utf8Converter` itself.
+- The archive Composer installs carries only `src/`, the README, the changelog and the
+  licence. A `.gitattributes` keeps the tests, the CI and tool configuration, and the agent notes
+  out of it, which halves the download; a clone still has everything.
 - **PHP 8.2 is now the minimum** in both mirrors. The PRADO framework that prado-image builds on
   requires it, and the two repositories share code file for file, so they share a language
   floor too. PHP 8.1 is past end of life; CI no longer runs it.

@@ -15,6 +15,40 @@ class ImageGraphicsTest extends PHPUnit\Framework\TestCase
 	protected function tearDown(): void
 	{
 		ImageGraphics::setDefaultMode(null);
+		ImageGraphics::setMaxPixels(null);
+	}
+
+	public function testPixelCeiling()
+	{
+		// The ceiling bounds what a raster may declare before a decoder sizes a buffer from it.
+		self::assertSame(1 << 28, ImageGraphics::DefaultMaxPixels);
+		self::assertSame(ImageGraphics::DefaultMaxPixels, ImageGraphics::getMaxPixels());
+		ImageGraphics::assertPixelCount(16384, 16384);   // exactly at the ceiling
+		try {
+			ImageGraphics::assertPixelCount(16385, 16384);
+			self::fail('a raster over the ceiling must be refused');
+		} catch (\UnexpectedValueException $e) {
+			self::assertStringContainsString('exceeds the ceiling', $e->getMessage());
+		}
+		// A product past the integer range is still simply too many.
+		$this->expectPixelRefusal(PHP_INT_MAX, PHP_INT_MAX);
+
+		ImageGraphics::setMaxPixels(24);
+		self::assertSame(24, ImageGraphics::getMaxPixels());
+		ImageGraphics::assertPixelCount(6, 4);
+		$this->expectPixelRefusal(5, 5);
+
+		ImageGraphics::setMaxPixels(null);
+		self::assertSame(ImageGraphics::DefaultMaxPixels, ImageGraphics::getMaxPixels());
+	}
+
+	private function expectPixelRefusal(int $width, int $height): void
+	{
+		try {
+			ImageGraphics::assertPixelCount($width, $height);
+			self::fail("a {$width}x{$height} raster must be refused");
+		} catch (\UnexpectedValueException) {
+		}
 	}
 
 	private function requireImagick(): void

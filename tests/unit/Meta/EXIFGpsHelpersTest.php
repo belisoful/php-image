@@ -109,4 +109,30 @@ class EXIFGpsHelpersTest extends PHPUnit\Framework\TestCase
 		$gps->setTagValues(2, Belisoful\Image\TIFF\TIFFDataType::URational, [[60, 1]]);
 		self::assertEqualsWithDelta(60.0, $exif->getLatitude(), 1e-9);
 	}
+	public function testCoordinateWithAReferenceThatIsNotALetter()
+	{
+		// The reference tag is there but was stored as numbers: it names no hemisphere,
+		// so the coordinate reads unsigned rather than tripping on the value's shape.
+		$exif = new EXIF();
+		$exif->setLatitude(-33.868820);
+		$gps = $exif->getGpsIfd();
+		$gps->setTagValues(1, Belisoful\Image\TIFF\TIFFDataType::UShort, [83, 0]);
+		set_error_handler(static function (int $no, string $message): never {
+			throw new \ErrorException($message, 0, $no);
+		});
+		try {
+			self::assertEqualsWithDelta(33.868820, $exif->getLatitude(), 1e-6);
+		} finally {
+			restore_error_handler();
+		}
+	}
+	public function testGpsTimestampWithADateStampPaddedPastItsTerminator()
+	{
+		// The date ends at its first NUL; whatever a writer left after it is padding.
+		$exif = new EXIF();
+		$gps = $exif->getGpsIfd(true);
+		$gps->setTagValues(29, Belisoful\Image\TIFF\TIFFDataType::Ascii, "2026:01:02\0\0junk\0");
+		$gps->setTagValues(7, Belisoful\Image\TIFF\TIFFDataType::URational, [[14, 1], [30, 1], [5, 1]]);
+		self::assertSame('2026-01-02T14:30:05+00:00', $exif->getGpsTimestamp()?->format('c'));
+	}
 }

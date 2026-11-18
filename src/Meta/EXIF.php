@@ -902,7 +902,9 @@ class EXIF implements PrivacyScrubbableInterface
 		}
 		$parsed = \DateTimeImmutable::createFromFormat(
 			'Y:m:d H:i:s',
-			sprintf('%s %02d:%02d:%02d', trim($date), (int) $time->getRational(0), (int) $time->getRational(1), (int) $time->getRational(2)),
+			// The date ends at its first NUL, as any C string does: bytes after it are padding,
+			// and createFromFormat() throws a \ValueError on a string that holds one.
+			sprintf('%s %02d:%02d:%02d', trim(explode("\0", $date, 2)[0]), (int) $time->getRational(0), (int) $time->getRational(1), (int) $time->getRational(2)),
 			new \DateTimeZone('UTC'),
 		);
 		return $parsed === false ? null : $parsed;
@@ -946,8 +948,8 @@ class EXIF implements PrivacyScrubbableInterface
 		$degrees = ($tag->getRational(0) ?? 0.0)
 			+ ($tag->getCount() > 1 ? ($tag->getRational(1) ?? 0.0) / 60 : 0)
 			+ ($tag->getCount() > 2 ? ($tag->getRational(2) ?? 0.0) / 3600 : 0);
-		$ref = $gps->getTagValue($refTag);
-		return strcasecmp(trim((string) $ref), $negativeRef) === 0 ? -$degrees : $degrees;
+		$ref = $gps->getTagValue($refTag);   // a letter; anything else names no hemisphere
+		return is_string($ref) && strcasecmp(trim($ref), $negativeRef) === 0 ? -$degrees : $degrees;
 	}
 
 	/**

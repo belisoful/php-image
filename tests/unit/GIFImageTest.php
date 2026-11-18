@@ -1043,4 +1043,18 @@ class GIFImageTest extends PHPUnit\Framework\TestCase
 		self::assertSame(2, $loaded->getFrameCount());
 		self::assertSame($this->richGif(), $loaded->toBinary());
 	}
+	public function testDecodingAFrameOverThePixelCeilingIsRefused()
+	{
+		// Short pixel data is padded out to the frame's stated size, so a frame that
+		// claims 65535 by 65535 is refused before that padding is built.
+		$frame = new GIFFrame();
+		$frame->setWidth(65535);
+		$frame->setHeight(65535);
+		try {
+			$frame->getPixels();
+			self::fail('a frame over the ceiling must be refused');
+		} catch (\UnexpectedValueException $e) {
+			self::assertStringContainsString('exceeds the ceiling', $e->getMessage());
+		}
+	}
 }

@@ -279,9 +279,17 @@ class ICCProfileTest extends PHPUnit\Framework\TestCase
 			'cTRC' => 'para' . "\0\0\0\0" . pack('n', 9) . "\0\0" . pack('N', 0), // an unknown function type
 			'dTRC' => 'para' . "\0\0\0\0" . pack('n', 4) . "\0\0" . pack('N', 0), // too few parameters for type 4
 			'eTRC' => 'curv' . "\0\0",                                          // truncated before the count
+			'fTRC' => 'curv' . "\0\0\0\0" . pack('N', 1),                        // a gamma with no value after the count
 		]));
-		foreach (['aTRC', 'bTRC', 'cTRC', 'dTRC', 'eTRC'] as $signature) {
-			self::assertNull($profile->decodeCurve($signature), $signature);
+		set_error_handler(static function (int $no, string $message): never {
+			throw new \ErrorException($message, 0, $no);
+		});
+		try {
+			foreach (['aTRC', 'bTRC', 'cTRC', 'dTRC', 'eTRC', 'fTRC'] as $signature) {
+				self::assertNull($profile->decodeCurve($signature), $signature);
+			}
+		} finally {
+			restore_error_handler();
 		}
 	}
 

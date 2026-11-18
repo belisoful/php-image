@@ -258,4 +258,65 @@ class EXIFInterpretTest extends PHPUnit\Framework\TestCase
 		self::assertNull(EXIFTags::findByName('GPSLatitude', EXIFTags::EXIF));
 		self::assertSame('ExposureTime', EXIFTags::nameOf(EXIFTags::EXIF, 33434));
 	}
+	public function testTagStoredInATypeItsDefinitionDoesNotTake()
+	{
+		// A field can carry any TIFF type whatever its tag defines.  Rendering one that
+		// does not fit shows what is stored instead of indexing or casting by its shape.
+		set_error_handler(static function (int $no, string $message): never {
+			throw new \ErrorException($message, 0, $no);
+		});
+		try {
+			// An enumeration stored as a rational, and as a float: neither keys a lookup.
+			$orientation = new TIFFTag(274, TIFFDataType::URational, [[3, 1]]);
+			self::assertSame('3', EXIFTags::textValue($orientation, EXIFTags::TIFF));
+			$orientation = new TIFFTag(274, TIFFDataType::Float, [1.5]);
+			self::assertSame('1.5', EXIFTags::textValue($orientation, EXIFTags::TIFF));
+			// Stored as text it still looks up, and reports what it does not know.
+			$orientation = new TIFFTag(274, TIFFDataType::Ascii, 'sideways');
+			self::assertSame('Unknown (sideways)', EXIFTags::textValue($orientation, EXIFTags::TIFF));
+
+			// A text tag stored as rationals spells no text.
+			$make = new TIFFTag(271, TIFFDataType::URational, [[1, 2], [3, 1]]);
+			self::assertSame('1/2, 3', EXIFTags::textValue($make, EXIFTags::TIFF));
+
+			// A character-coded comment stored as numbers has no charset signature to read.
+			$comment = new TIFFTag(37510, TIFFDataType::UShort, [1, 2]);
+			self::assertSame('1, 2', EXIFTags::textValue($comment, EXIFTags::EXIF));
+		} finally {
+			restore_error_handler();
+		}
+	}
+	public function testCodedStringsWithoutIconv()
+	{
+		// ext-iconv is only suggested.  Without it ASCII still round-trips; a comment in a
+		// charset that needs converting reads as one that does not convert, and writing
+		// one is refused, since it would otherwise be written empty.
+		self::assertSame("ASCII\0\0\0plain", TEXIFTagsWithoutIconv::encodeCodedString('plain'));
+		self::assertSame('plain', TEXIFTagsWithoutIconv::decodeCodedString("ASCII\0\0\0plain"));
+
+		$unicode = EXIFTags::encodeCodedString('Grüße', 'UNICODE');
+		self::assertSame('Grüße', EXIFTags::decodeCodedString($unicode));
+		self::assertSame('', TEXIFTagsWithoutIconv::decodeCodedString($unicode));
+		self::assertSame('raw', TEXIFTagsWithoutIconv::decodeCodedString("JIS\0\0\0\0\0raw"));
+
+		foreach (['UNICODE', 'JIS', null] as $charset) {
+			try {
+				TEXIFTagsWithoutIconv::encodeCodedString('Grüße', $charset);
+				self::fail('encoding ' . ($charset ?? 'non-ASCII text') . ' must be refused without ext-iconv');
+			} catch (\RuntimeException) {
+			}
+		}
+	}
+}
+
+/**
+ * The tag tables on an installation without ext-iconv: the extension check is the seam
+ * the charset conversion routes through, so overriding it stands in for its absence.
+ */
+class TEXIFTagsWithoutIconv extends EXIFTags
+{
+	protected static function hasIconv(): bool
+	{
+		return false;
+	}
 }

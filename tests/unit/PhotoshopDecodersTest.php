@@ -194,4 +194,26 @@ class PhotoshopDecodersTest extends PHPUnit\Framework\TestCase
 		$bad = 42;
 		Photoshop8BIM::iptcDecode($bad);
 	}
+	public function testUnicodeStringsWithoutIconvReadAsEmpty()
+	{
+		// ext-iconv is only suggested.  Without it a UTF-16 string cannot be converted
+		// and reads as one that does not convert: empty, with the fields after it intact.
+		$data = pack('N', 1) . "\x01" . $this->psUnicode('Adobe Photoshop') . $this->psUnicode('Reader') . pack('N', 3);
+		$decoded = (new TPhotoshopResourceWithoutIconv(PhotoshopResource::VersionInfo, $data))->decodeVersionInfo();
+		self::assertSame('', $decoded['writer']);
+		self::assertSame('', $decoded['reader']);
+		self::assertSame(3, $decoded['fileVersion']);
+	}
+}
+
+/**
+ * A resource on an installation without ext-iconv: the extension check is the seam the
+ * Unicode-string decoder routes through, so overriding it stands in for its absence.
+ */
+class TPhotoshopResourceWithoutIconv extends PhotoshopResource
+{
+	protected function hasIconv(): bool
+	{
+		return false;
+	}
 }

@@ -113,4 +113,11 @@ class XMPTest extends PHPUnit\Framework\TestCase
 		self::assertNotNull($reparsed->getXMP());
 		self::assertSame('Bridged', $reparsed->getXMP()->getTitle());
 	}
+	public function testAnEmptyPacketIsNotAPacket()
+	{
+		// A carrier can be present and hold nothing: a zero-length WebP `XMP ` chunk, a
+		// PNG iTXt with the keyword and no text.  That is no packet, not an error.
+		self::assertFalse(XMP::parse(''));
+		self::assertFalse(XMP::parse('   '));
+	}
 }

@@ -40,11 +40,58 @@ namespace Belisoful\Image;
  */
 class ImageGraphics
 {
+	/**
+	 * @var int The default {@see getMaxPixels() pixel ceiling}: 2^28, a 16384 by 16384
+	 *   raster, which is 768 MiB once decoded to RGB.
+	 */
+	public const DefaultMaxPixels = 0x10000000;
+
 	/** @var ?string The explicit default mode, or null to auto-select. */
 	private static ?string $_defaultMode = null;
 
 	/** @var array<string, ImageGraphicsLibraryInterface> The resolved libraries, by mode name. */
 	private static array $_libraries = [];
+
+	/** @var int The most pixels a raster may declare and still be decoded. */
+	private static int $_maxPixels = self::DefaultMaxPixels;
+
+	/**
+	 * Returns the pixel ceiling: the most pixels a raster may declare and still be decoded
+	 * by the pure-PHP decoders ({@see \Belisoful\Image\TIFF\TIFFRaster::toRgb()},
+	 * {@see \Belisoful\Image\GIF\GIFFrame::getPixels()}).  They size their buffers from
+	 * the dimensions a file states, before reading a pixel, so without a ceiling a file of
+	 * a few dozen bytes that claims 65535 by 65535 exhausts the memory limit: a fatal
+	 * error no caller can catch.  Reading and rewriting metadata never decodes the raster
+	 * and is not subject to it.
+	 * @return int The ceiling, in pixels.
+	 */
+	public static function getMaxPixels(): int
+	{
+		return self::$_maxPixels;
+	}
+
+	/**
+	 * Sets the pixel ceiling.  Raise it, with the memory limit, to decode a larger scan.
+	 * @param ?int $pixels The ceiling in pixels, or null to restore
+	 *   {@see DefaultMaxPixels}.  Zero or less refuses every raster.
+	 */
+	public static function setMaxPixels(?int $pixels): void
+	{
+		self::$_maxPixels = $pixels ?? self::DefaultMaxPixels;
+	}
+
+	/**
+	 * Refuses a raster whose declared dimensions exceed the {@see getMaxPixels() ceiling}.
+	 * @param int $width The declared width in pixels.
+	 * @param int $height The declared height in pixels.
+	 * @throws \UnexpectedValueException When the raster is over the ceiling.
+	 */
+	public static function assertPixelCount(int $width, int $height): void
+	{
+		if ($width * $height > self::$_maxPixels) {
+			throw new \UnexpectedValueException(sprintf('A %dx%d raster exceeds the ceiling of %d pixels; raise it with ImageGraphics::setMaxPixels().', $width, $height, self::$_maxPixels));
+		}
+	}
 
 	/**
 	 * Indicates whether the GD extension is loaded.

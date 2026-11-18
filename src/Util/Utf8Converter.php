@@ -21,6 +21,17 @@ namespace Belisoful\Image\Util;
 class Utf8Converter
 {
 	/**
+	 * Indicates whether ext-iconv, which is suggested rather than required, is loaded.
+	 * Without it nothing can be converted and a string passes through as it is, which is
+	 * also what a failed conversion leaves.
+	 * @return bool Whether charset conversion is available.
+	 */
+	protected static function hasIconv(): bool
+	{
+		return function_exists('iconv');
+	}
+
+	/**
 	 * Convert strings to UTF-8 via iconv. NB, the result may not by UTF-8
 	 * if the conversion failed.
 	 * @param string $string string to convert to UTF-8
@@ -41,7 +52,9 @@ class Utf8Converter
 				$locale = setLocale(LC_CTYPE, '0');
 				setLocale(LC_CTYPE, $lang);
 			}
-			$s = iconv($from, 'UTF-8', $string); //to UTF-8
+			// Silenced: iconv raises a notice on bytes the charset does not hold, and the
+			// false it returns is already answered with the string unconverted.
+			$s = static::hasIconv() ? @iconv($from, 'UTF-8', $string) : false; //to UTF-8
 			if ($lang !== null) {
 				setLocale(LC_CTYPE, $locale);
 			}
@@ -71,7 +84,7 @@ class Utf8Converter
 				$locale = setLocale(LC_CTYPE, '0');
 				setLocale(LC_CTYPE, $lang);
 			}
-			$s = iconv('UTF-8', $to, $string);
+			$s = static::hasIconv() ? @iconv('UTF-8', $to, $string) : false;
 			if ($lang !== null) {
 				setLocale(LC_CTYPE, $locale);
 			}

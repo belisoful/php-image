@@ -1405,13 +1405,26 @@ class EXIFTags
 			case 'Lookup':
 				$parts = [];
 				foreach ((array) $tag->getValues() as $value) {
+					if (!is_int($value) && !is_string($value)) {
+						// A rational or a float cannot key an enumeration: the field was
+						// stored in a type its tag does not take, so show what is stored.
+						return self::numericText($tag);
+					}
 					$parts[] = $def['lookup'][$value] ?? "Unknown ($value)";
 				}
 				return implode(', ', $parts);
 			case 'String':
-				return trim(rtrim((string) (is_array($tag->getValues()) ? implode('', $tag->getValues()) : $tag->getValues()), "\0"));
+				$text = $tag->getValues();
+				if (is_array($text)) {
+					if (is_array(reset($text))) {
+						return self::numericText($tag);   // rationals spell no text
+					}
+					$text = implode('', $text);   // a numeric type: the values join
+				}
+				return trim(rtrim($text, "\0"));
 			case 'CodedString':
-				return self::decodeCodedString((string) $tag->getValues());
+				$coded = $tag->getValues();
+				return is_array($coded) ? self::numericText($tag) : self::decodeCodedString($coded);
 			case 'Special':
 				return self::decodeSpecial($tag, $def['special'] ?? '', $bigEndian);
 			case 'SubIFD':
@@ -1490,26 +1503,53 @@ class EXIFTags
 	}
 
 	/**
+	 * Indicates whether ext-iconv, which is suggested rather than required, is loaded.
+	 * @return bool Whether charset conversion is available.
+	 */
+	protected static function hasIconv(): bool
+	{
+		return function_exists('iconv');
+	}
+
+	/**
+	 * Converts text between charsets through ext-iconv.
+	 * @param string $from The source charset.
+	 * @param string $to The target charset.
+	 * @param string $text The text.
+	 * @return false|string The converted text, or false when it cannot be had: an invalid
+	 *   sequence, an unknown charset, or no ext-iconv to convert with.
+	 */
+	protected static function convertCharset(string $from, string $to, string $text): false|string
+	{
+		return static::hasIconv() ? @iconv($from, $to, $text) : false;
+	}
+
+	/**
 	 * Encodes text as a character-coded string: the 8-byte charset signature then the
 	 * text, the form EXIF uses for UserComment and Exif audio for its user comment.
 	 * @param string $text The text.
 	 * @param ?string $charset The charset to force ('ASCII', 'UNICODE', 'JIS'), or null
 	 *   to choose ASCII for plain text and UNICODE (UTF-16BE) otherwise.
+	 * @throws \RuntimeException When the charset needs a conversion and ext-iconv is not
+	 *   loaded: the text would otherwise be written empty.
 	 * @return string The coded bytes.
 	 */
 	public static function encodeCodedString(string $text, ?string $charset = null): string
 	{
 		$charset ??= preg_match('/[\x80-\xFF]/', $text) ? 'UNICODE' : 'ASCII';
 		$charset = strtoupper($charset);
+		if ($charset !== 'UNICODE' && $charset !== 'JIS') {
+			return "ASCII\0\0\0" . $text;
+		}
+		if (!static::hasIconv()) {
+			throw new \RuntimeException(sprintf('Encoding %s text requires the iconv extension.', $charset));
+		}
 		if ($charset === 'UNICODE') {
-			$encoded = @iconv('UTF-8', 'UTF-16BE//IGNORE', $text);
+			$encoded = static::convertCharset('UTF-8', 'UTF-16BE//IGNORE', $text);
 			return "UNICODE\0" . ($encoded === false ? '' : $encoded);
 		}
-		if ($charset === 'JIS') {
-			$encoded = @iconv('UTF-8', 'ISO-2022-JP//IGNORE', $text);
-			return "JIS\0\0\0\0\0" . ($encoded === false ? '' : $encoded);
-		}
-		return "ASCII\0\0\0" . $text;
+		$encoded = static::convertCharset('UTF-8', 'ISO-2022-JP//IGNORE', $text);
+		return "JIS\0\0\0\0\0" . ($encoded === false ? '' : $encoded);
 	}
 
 	/**
@@ -1540,11 +1580,11 @@ class EXIFTags
 			}
 			// A payload truncated mid-character cannot be decoded at all: iconv answers
 			// false and the cast leaves nothing, which is the documented behaviour.
-			$decoded = @iconv($charset, 'UTF-8//IGNORE', $text);
+			$decoded = static::convertCharset($charset, 'UTF-8//IGNORE', $text);
 			return trim(rtrim((string) $decoded, "\0"));
 		}
 		if (str_starts_with($signature, 'JIS')) {
-			$decoded = @iconv('ISO-2022-JP', 'UTF-8//IGNORE', $text);
+			$decoded = static::convertCharset('ISO-2022-JP', 'UTF-8//IGNORE', $text);
 			return trim(rtrim($decoded === false ? $text : $decoded, "\0"));
 		}
 		return trim(rtrim($data, "\0"));
