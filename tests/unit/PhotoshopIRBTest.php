@@ -1,5 +1,6 @@
 <?php
 
+use Belisoful\Image\ImageFile;
 use Belisoful\Image\Meta\IPTC;
 use Belisoful\Image\Meta\IPTCTags;
 use Belisoful\Image\JPEGImage;
@@ -172,6 +173,24 @@ class PhotoshopIRBTest extends PHPUnit\Framework\TestCase
 
 		// A block that is nothing but the truncated header holds no resource at all.
 		self::assertFalse(PhotoshopIRB::parse($stub));
+	}
+
+	public function testABlockOfMoreResourcesThanThePartCeilingAllowsReadsAsAbsent()
+	{
+		// Twelve bytes make an empty resource and each becomes an object, so a block of
+		// nothing else is bounded the way a container's own parts are — but as metadata it
+		// reads as absent rather than refusing the file that carries it.
+		$empty = PhotoshopIRB::ResourceSignature . pack('n', 0x0FA0) . "\x00\x00" . pack('N', 0);
+		ImageFile::setMaxParts(8);
+		try {
+			self::assertCount(8, PhotoshopIRB::parse(str_repeat($empty, 8)));
+			self::assertFalse(PhotoshopIRB::parse(str_repeat($empty, 12)));
+
+			$jpeg = JPEGImage::fromString("\xFF\xD8\xFF\xED" . pack('n', 2 + 14 + 144) . PhotoshopIRB::Signature . str_repeat($empty, 12) . "\xFF\xD9");
+			self::assertNull($jpeg->getPhotoshopIRB());
+		} finally {
+			ImageFile::setMaxParts(null);
+		}
 	}
 
 	public function testEmptyIrbHasNoSegments()

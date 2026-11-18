@@ -1,5 +1,6 @@
 <?php
 
+use Belisoful\Image\ImageFile;
 use Belisoful\Image\ImageGraphicsLibraryInterface;
 use Belisoful\Image\Meta\IPTC;
 use Belisoful\Image\Meta\IPTCTags;
@@ -1102,6 +1103,39 @@ class IPTCTest extends PHPUnit\Framework\TestCase
 			self::assertSame(258, IPTC::parse($whole)[IPTCTags::ApplicationRecordVersion]);
 		} finally {
 			restore_error_handler();
+		}
+	}
+
+	public function testADatasetRepeatedThousandsOfTimesIsReadInOnePass()
+	{
+		// Adding each keyword as it was met used to filter and copy every earlier one again:
+		// twenty thousand of them were two hundred million steps, from a block of two
+		// hundred kilobytes.
+		$block = '';
+		for ($i = 0; $i < 20000; $i++) {
+			$block .= "\x1C\x02\x19\x00\x05" . sprintf('k%04x', $i);
+		}
+		$block .= "\x1C\x02\x78\x00\x07caption";
+
+		$iptc = IPTC::parse($block);
+
+		self::assertCount(20000, $iptc[IPTCTags::Keywords]);
+		self::assertSame('k0000', $iptc[IPTCTags::Keywords][0]);
+		self::assertSame('k4e1f', $iptc[IPTCTags::Keywords][19999], 'in the order they were stored');
+		self::assertSame('caption', $iptc[IPTCTags::CaptionAbstract]);
+	}
+
+	public function testABlockOfMoreDatasetsThanThePartCeilingAllowsReadsAsAbsent()
+	{
+		$datasets = fn (int $n) => str_repeat("\x1C\x02\x19\x00\x00", $n);
+		ImageFile::setMaxParts(8);
+		try {
+			$eight = $datasets(8);
+			self::assertCount(8, IPTC::parse($eight)[IPTCTags::Keywords]);
+			$twelve = $datasets(12);
+			self::assertFalse(IPTC::parse($twelve));
+		} finally {
+			ImageFile::setMaxParts(null);
 		}
 	}
 

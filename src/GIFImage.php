@@ -96,6 +96,12 @@ class GIFImage extends ImageFile
 	/** @var string Any bytes following the trailer, preserved verbatim. */
 	private string $_trailingBytes = '';
 
+	/** @var int The blocks and data sub-blocks the parse has counted. */
+	private int $_partCount = 0;
+
+	/** @var int The length of the data the parse has walked, for the part ceiling. */
+	private int $_partBytes = 0;
+
 	/**
 	 * Returns the format name.
 	 * @return string Always 'GIF'.
@@ -714,6 +720,8 @@ class GIFImage extends ImageFile
 		if ($len < 13 || !static::isGIF($bytes)) {
 			throw new \UnexpectedValueException(sprintf('GIF data is invalid: %s.', 'missing GIF87a or GIF89a signature'));
 		}
+		$this->_partCount = 0;
+		$this->_partBytes = $len;
 		$this->_version = substr($bytes, 0, 6);
 		$this->setWidthDirect(unpack('v', substr($bytes, 6, 2))[1]);
 		$this->setHeightDirect(unpack('v', substr($bytes, 8, 2))[1]);
@@ -770,6 +778,7 @@ class GIFImage extends ImageFile
 		}
 		$label = ord($bytes[$i + 1]);
 		$i += 2;
+		$this->countPart();
 		if ($label === GIFBlockType::ApplicationLabel && ($raw = $this->parseRawApplication($bytes, $i)) !== null) {
 			$this->_blocks[] = $raw;
 			return $i;
@@ -810,6 +819,7 @@ class GIFImage extends ImageFile
 		if ($i + 10 > $len) {
 			throw new \UnexpectedValueException(sprintf('GIF data is invalid: %s.', 'an image descriptor is truncated'));
 		}
+		$this->countPart();
 		$frame = new GIFFrame();
 		$d = unpack('vleft/vtop/vwidth/vheight', substr($bytes, $i + 1, 8));
 		$frame->setLeft($d['left']);
@@ -900,10 +910,22 @@ class GIFImage extends ImageFile
 			if ($i + 1 + $size > $len) {
 				throw new \UnexpectedValueException(sprintf('GIF data is invalid: %s.', 'a data sub-block runs past the end of the data'));
 			}
+			$this->countPart();
 			$blocks[] = substr($bytes, $i + 1, $size);
 			$i += 1 + $size;
 		}
 		throw new \UnexpectedValueException(sprintf('GIF data is invalid: %s.', 'a data sub-block chain is unterminated'));
+	}
+
+	/**
+	 * Counts one block or data sub-block against the {@see ImageFile::getMaxParts() part
+	 * ceiling}.  Sub-blocks count because the framing is kept, one string each: a chain of
+	 * one-byte sub-blocks would otherwise cost many times its size.
+	 * @throws \UnexpectedValueException When the GIF holds more parts than its ceiling and length allow.
+	 */
+	private function countPart(): void
+	{
+		self::assertPartCount(++$this->_partCount, $this->_partBytes);
 	}
 
 	//
@@ -977,6 +999,7 @@ class GIFImage extends ImageFile
 		if (strlen($header) < 13 || !static::isGIF($header)) {
 			throw new \UnexpectedValueException(sprintf('GIF data is invalid: %s.', 'missing GIF87a or GIF89a signature'));
 		}
+		$this->_partCount = 0;
 		$this->_version = substr($header, 0, 6);
 		$this->setWidthDirect(unpack('v', substr($header, 6, 2))[1]);
 		$this->setHeightDirect(unpack('v', substr($header, 8, 2))[1]);
@@ -996,6 +1019,7 @@ class GIFImage extends ImageFile
 			}
 			if ($marker === GIFBlockType::ExtensionIntroducer) {
 				$body = $this->readExtensionBody($binary);
+				$this->_partBytes = $binary->tell();
 				$this->parseExtension(chr(GIFBlockType::ExtensionIntroducer) . $body, 0, $pending);
 				continue;
 			}
@@ -1035,6 +1059,8 @@ class GIFImage extends ImageFile
 		while (($size = ord($binary->readBytes(1))) !== 0) {
 			$binary->seek($binary->tell() + $size);   // skip a data sub-block without loading it
 		}
+		$this->_partBytes = $binary->tell();
+		$this->countPart();
 		$frame->setDeferredData(new SourceRange($stream, $runStart, $binary->tell() - $runStart));
 		if ($pending !== null) {
 			$frame->setHasGraphicControl(true);

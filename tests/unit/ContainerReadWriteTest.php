@@ -554,7 +554,7 @@ class ContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		self::assertNull($capped->getIPTC());
 		self::assertNull($capped->getXmpText());
 
-		self::assertSame(64 * 1024 * 1024, PNGImage::MaxInflatedSize);
+		self::assertSame(16 * 1024 * 1024, PNGImage::MaxInflatedSize);
 	}
 
 	public function testPngWithoutZlibReadsCompressedChunksAsAbsentAndRefusesToWriteThem()

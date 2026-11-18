@@ -412,7 +412,14 @@ class PrivacyScrubTest extends PHPUnit\Framework\TestCase
 
 		$removed = $file->clearPrivateData();
 		self::assertGreaterThan(0, $removed, "$class removed something");
-		$round = $class::fromString($file->toBinary());
+		$scrubbed = $file->toBinary();
+		$round = $class::fromString($scrubbed);
+
+		// Gone from the file, not merely from what the accessors return: a container that
+		// writes around its media must not leave the old bytes where nothing points at them.
+		foreach (['Jane Doe', 'TestCam', 'Her Movie'] as $private) {
+			self::assertStringNotContainsString($private, $scrubbed, "$class leaves no '$private' in the bytes");
+		}
 
 		if ($round->getEXIF() !== null) {   // every container exposes getEXIF; only some carry one
 			self::assertNull($round->getEXIF()->getValueByName('Artist'), "$class EXIF Artist gone");

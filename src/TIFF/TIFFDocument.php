@@ -10,6 +10,7 @@
 
 namespace Belisoful\Image\TIFF;
 
+use Belisoful\Image\ImageFile;
 use Belisoful\Image\Stream\BinaryReader;
 use Belisoful\Image\Stream\SourceRange;
 use Belisoful\Image\Stream\StreamIO;
@@ -85,6 +86,15 @@ class TIFFDocument
 
 	/** @var int The stream position of the TIFF start, for deferred strip ranges. */
 	private int $_scanBase = 0;
+
+	/** @var array<int, true> The offsets of the IFDs the parse has read, chain and sub-IFDs alike. */
+	private array $_readIfds = [];
+
+	/** @var int The directory entries the parse has read, for the part ceiling. */
+	private int $_entryCount = 0;
+
+	/** @var int The length of the data being parsed, for the part ceiling; zero when scanning a stream. */
+	private int $_entryBytes = 0;
 
 	/**
 	 * Constructs an empty big-endian document.
@@ -235,13 +245,14 @@ class TIFFDocument
 		} catch (\RuntimeException $e) {
 			throw new \UnexpectedValueException(sprintf('TIFF data is invalid: %s.', 'shorter than the 8-byte header'));
 		}
-		$seen = [];
+		$this->_readIfds = [];
+		$this->_entryCount = 0;
+		$this->_entryBytes = 0;
 		while ($offset > 0 && count($this->_ifds) < static::MaxIfds) {
-			if (isset($seen[$offset])) {
+			if (!$this->claimIfd($offset)) {
 				$this->addWarning("IFD chain loops back to offset $offset");
 				break;
 			}
-			$seen[$offset] = true;
 			[$ifd, $offset] = $this->scanIfd($binary, $base, $offset, 0, $maxTagBytes);
 			if ($ifd === null) {
 				break;
@@ -271,6 +282,7 @@ class TIFFDocument
 			return [null, 0];
 		}
 		$next = $this->readULong($table, $count * 12);
+		$this->countEntries($count);
 		$ifd = new TIFFIfd();
 		for ($i = 0; $i < $count; $i++) {
 			$entry = $i * 12;
@@ -303,9 +315,13 @@ class TIFFDocument
 			$tag->setOffset($valueOffset);
 			if (in_array($tagId, $this->_subIfdTags, true) && $depth < static::MaxIfds) {
 				$subOffset = (int) ($tag->getValues()[0] ?? 0);
-				[$subIfd] = $this->scanIfd($binary, $base, $subOffset, $depth + 1, $maxTagBytes);
-				if ($subIfd !== null) {
-					$tag->setSubIfd($subIfd);
+				if ($this->claimIfd($subOffset)) {
+					[$subIfd] = $this->scanIfd($binary, $base, $subOffset, $depth + 1, $maxTagBytes);
+					if ($subIfd !== null) {
+						$tag->setSubIfd($subIfd);
+					}
+				} else {
+					$this->addWarning("tag $tagId points at the IFD at offset $subOffset, which was already read");
 				}
 			}
 			$ifd->setTag($tag);
@@ -420,13 +436,14 @@ class TIFFDocument
 			throw new \UnexpectedValueException(sprintf('TIFF data is invalid: %s.', 'missing magic number 42'));
 		}
 		$offset = $this->readULong($bytes, 4);
-		$seen = [];
+		$this->_readIfds = [];
+		$this->_entryCount = 0;
+		$this->_entryBytes = strlen($bytes);
 		while ($offset > 0 && count($this->_ifds) < static::MaxIfds) {
-			if (isset($seen[$offset])) {
+			if (!$this->claimIfd($offset)) {
 				$this->addWarning("IFD chain loops back to offset $offset");
 				break;
 			}
-			$seen[$offset] = true;
 			[$ifd, $offset] = $this->readIfd($bytes, $offset, 0);
 			if ($ifd === null) {
 				break;
@@ -471,6 +488,37 @@ class TIFFDocument
 	}
 
 	/**
+	 * Claims an IFD offset for the parse in progress.  An IFD is read once however many
+	 * pointers lead to it — the chain's next-IFD pointers and every sub-IFD tag share the
+	 * one record — because each pointer costs twelve bytes while the IFD it names is read in
+	 * full: two pointers back at their own IFD double the work at every level, and a chain
+	 * of distinct IFDs that each point twice at the next does the same with no loop in it.
+	 * @param int $offset The IFD table offset.
+	 * @return bool Whether the offset is new; false when that IFD was already read.
+	 */
+	protected function claimIfd(int $offset): bool
+	{
+		if (isset($this->_readIfds[$offset])) {
+			return false;
+		}
+		$this->_readIfds[$offset] = true;
+		return true;
+	}
+
+	/**
+	 * Counts an IFD's entries against the {@see ImageFile::getMaxParts() part ceiling}.
+	 * Reading each IFD once still leaves overlapping ones: IFDs twelve bytes apart share
+	 * their entries, so a file can declare thousands of them over the same bytes.
+	 * @param int $count The entries the IFD holds.
+	 * @throws \UnexpectedValueException When the document holds more entries than its ceiling and length allow.
+	 */
+	protected function countEntries(int $count): void
+	{
+		$this->_entryCount += $count;
+		ImageFile::assertPartCount($this->_entryCount, $this->_entryBytes);
+	}
+
+	/**
 	 * Reads one IFD (and, on the main chain, its sub-IFDs).
 	 * @param string $bytes The TIFF bytes.
 	 * @param int $offset The IFD table offset.
@@ -492,6 +540,7 @@ class TIFFDocument
 			$this->addWarning("IFD at $offset declares $count entries beyond the data");
 			$count = max(0, intdiv($len - $offset - 2, 12));
 		}
+		$this->countEntries($count);
 		$ifd = new TIFFIfd();
 		for ($i = 0; $i < $count; $i++) {
 			$entry = $offset + 2 + $i * 12;
@@ -518,9 +567,13 @@ class TIFFDocument
 			$tag->setOffset($valueOffset);
 			if (in_array($tagId, $this->_subIfdTags, true) && $depth < static::MaxIfds) {
 				$subOffset = (int) ($tag->getValues()[0] ?? 0);
-				[$subIfd] = $this->readIfd($bytes, $subOffset, $depth + 1);
-				if ($subIfd !== null) {
-					$tag->setSubIfd($subIfd);
+				if ($this->claimIfd($subOffset)) {
+					[$subIfd] = $this->readIfd($bytes, $subOffset, $depth + 1);
+					if ($subIfd !== null) {
+						$tag->setSubIfd($subIfd);
+					}
+				} else {
+					$this->addWarning("tag $tagId points at the IFD at offset $subOffset, which was already read");
 				}
 			}
 			$ifd->setTag($tag);
@@ -540,6 +593,8 @@ class TIFFDocument
 	 */
 	public function readIfdAt(string $bytes, int $offset, int $valueBase = 0, bool $readNext = true): array
 	{
+		$this->_entryCount = 0;   // a read of its own, over bytes of its own
+		$this->_entryBytes = strlen($bytes);
 		return $this->readIfd($bytes, $offset, static::MaxIfds, $valueBase, $readNext);
 	}
 

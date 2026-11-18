@@ -326,9 +326,16 @@ class BMFFFile extends ImageFile
 	}
 
 	/**
-	 * Replaces the bytes an item locates: the new bytes are appended to the file in a fresh
-	 * `mdat` and the item's `iloc` extent is patched to point at them, so every byte that
-	 * was already in the file stays exactly where it was.
+	 * Replaces the bytes an item locates, leaving every other byte of the file exactly where
+	 * it was and none of the old bytes behind.
+	 *
+	 * New bytes no longer than the old are written over them, the remainder zeroed and only
+	 * the extent length patched.  Longer ones are appended in a fresh `mdat`, the item's
+	 * `iloc` extent is patched to point at them, and the old bytes are zeroed.  Either way
+	 * what the item used to hold is gone from the file, which is what a caller removing a
+	 * name or a place from it expects.  That holds for bytes that sit in a media data box and
+	 * that no other extent shares; any others are not this item's alone to overwrite, so they
+	 * are left as they are and the new bytes are appended.
 	 * @param BMFFItem $item The item to repoint.
 	 * @param string $data The new bytes.
 	 * @throws \RuntimeException When the item cannot be repointed in place, or the new offset or
@@ -341,11 +348,23 @@ class BMFFFile extends ImageFile
 		if ($meta === null || $iloc === null || !$item->getIsWritable()) {
 			throw new \RuntimeException(sprintf('The %s item cannot be repointed in place: it has no single file-located extent.', $item->getType()));
 		}
+		$home = $this->isExtentShared($item, $iloc->getPayload()) ? null : $this->findExtentHome($item);
+		$was = $item->getLength();
+		if ($home !== null && strlen($data) <= $was) {
+			// Written where the old bytes were: the slot keeps its size, so nothing moves.
+			[$box, $at] = $home;
+			$box->setPayload(substr_replace($box->getPayload(), str_pad($data, $was, "\0"), $at, $was));
+			$iloc->setPayload($item->writeLocation($iloc->getPayload(), $item->getOffset(), strlen($data)));
+			return;
+		}
 		// The payload lands in a new mdat appended at the end; its offset is where that
 		// box's payload will begin once the current bytes are composed.
 		$offset = strlen($this->compose()) + 8;
 		if (!$item->fits($offset, strlen($data))) {
 			throw new \RuntimeException(sprintf("The %s item's new location does not fit the field widths iloc already uses.", $item->getType()));
+		}
+		if ($home !== null) {
+			$home[0]->setPayload(substr_replace($home[0]->getPayload(), str_repeat("\0", $was), $home[1], $was));
 		}
 		$iloc->setPayload($item->writeLocation($iloc->getPayload(), $offset, strlen($data)));
 		$this->_boxes[] = new BMFFFileBox(self::MediaDataBox, $data);
@@ -986,15 +1005,19 @@ class BMFFFile extends ImageFile
 	}
 
 	/**
-	 * Reads the `iloc` box, recording each item's extent and where in the payload that
-	 * extent's numbers are stored so they can later be patched in place.
+	 * Reads the item location table: its field widths, and one row per item saying where
+	 * the item's extents begin.  The extents themselves are stepped over, not read, so an
+	 * entry costs the same however many it declares.
 	 * @param string $payload The `iloc` payload.
-	 * @param array<int, BMFFItem> $items The items to locate, keyed by item id.
+	 * @return array{0: int, 1: int, 2: int, 3: int, 4: array<int, array{0: int, 1: int, 2: int, 3: int, 4: int, 5: int}>}
+	 *   The offset, length, base offset and index field widths, then the rows: the item id,
+	 *   its construction method, its base offset and that field's position, its extent count,
+	 *   and the position of its first extent.
 	 */
-	private function readItemLocations(string $payload, array $items): void
+	private function readLocationTable(string $payload): array
 	{
 		if (strlen($payload) < 8) {
-			return;
+			return [0, 0, 0, 0, []];
 		}
 		$version = ord($payload[0]);
 		$offsetSize = ord($payload[4]) >> 4;
@@ -1003,11 +1026,9 @@ class BMFFFile extends ImageFile
 		$indexSize = $version === 1 || $version === 2 ? (ord($payload[5]) & 0x0F) : 0;
 		$idWidth = $version < 2 ? 2 : 4;
 		$pos = 6;
-		$count = $version < 2
-			? (int) unpack('n', substr($payload, 6, 2))[1]
-			: (int) unpack('N', substr($payload, 6, 4))[1];
-		$pos += $version < 2 ? 2 : 4;
+		$count = $this->readField($payload, $pos, $version < 2 ? 2 : 4);
 
+		$rows = [];
 		for ($i = 0; $i < $count && $pos < strlen($payload); $i++) {
 			$id = $this->readField($payload, $pos, $idWidth);
 			$construction = 0;
@@ -1018,30 +1039,107 @@ class BMFFFile extends ImageFile
 			$baseField = $pos;
 			$base = $this->readField($payload, $pos, $baseOffsetSize);
 			$extentCount = $this->readField($payload, $pos, 2);
+			$rows[] = [$id, $construction, $base, $baseField, $extentCount, $pos];
+			$pos += $extentCount * ($indexSize + $offsetSize + $lengthSize);
+		}
+		return [$offsetSize, $lengthSize, $baseOffsetSize, $indexSize, $rows];
+	}
+
+	/**
+	 * Joins each item to its location.  Only the first extent is modelled, so it is the only
+	 * one read: walking the rest would cost 65535 steps an item on a table whose fields are
+	 * all zero bytes wide, where no step moves forward.  A location that is not a place in any
+	 * file ({@see BMFFItem::isLocatable()}) is left unrecorded, so the item reads as having no
+	 * data rather than as an error.
+	 * @param string $payload The `iloc` payload.
+	 * @param array<int, BMFFItem> $items The items, keyed by id.
+	 */
+	private function readItemLocations(string $payload, array $items): void
+	{
+		[$offsetSize, $lengthSize, $baseOffsetSize, $indexSize, $rows] = $this->readLocationTable($payload);
+		foreach ($rows as [$id, $construction, $base, $baseField, $extentCount, $pos]) {
 			$item = $items[$id] ?? null;
-			for ($e = 0; $e < $extentCount; $e++) {
+			if ($item === null || $extentCount === 0) {
+				continue;
+			}
+			$pos += $indexSize;
+			$offsetField = $pos;
+			$offset = $this->readField($payload, $pos, $offsetSize);
+			$lengthField = $pos;
+			$length = $this->readField($payload, $pos, $lengthSize);
+			if (!BMFFItem::isLocatable($base, $offset, $length)) {
+				continue;
+			}
+			$item->setLocation(
+				$construction,
+				$base,
+				$baseField,
+				$baseOffsetSize,
+				$base + $offset,
+				$length,
+				$offsetField,
+				$offsetSize,
+				$lengthField,
+				$lengthSize,
+				$extentCount === 1,
+			);
+		}
+	}
+
+	/**
+	 * Indicates whether any other extent in the item location table overlaps the bytes an
+	 * item locates.  Those bytes are then not the item's alone, and must be neither reused
+	 * nor blanked.  Every extent of every file-located item is compared, the ones this class
+	 * does not otherwise model included; an empty extent overlaps nothing.
+	 * @param BMFFItem $item The item.
+	 * @param string $payload The `iloc` payload.
+	 * @return bool Whether the item's bytes are shared.
+	 */
+	private function isExtentShared(BMFFItem $item, string $payload): bool
+	{
+		[$offsetSize, $lengthSize, , $indexSize, $rows] = $this->readLocationTable($payload);
+		$from = $item->getOffset();
+		$to = $from + $item->getLength();
+		foreach ($rows as [, $construction, $base, , $extentCount, $pos]) {
+			if ($construction !== BMFFItem::FileConstruction) {
+				continue;
+			}
+			for ($e = 0; $e < $extentCount && $pos < strlen($payload); $e++) {
 				$pos += $indexSize;
-				$offsetField = $pos;
+				$field = $pos;
 				$offset = $this->readField($payload, $pos, $offsetSize);
-				$lengthField = $pos;
 				$length = $this->readField($payload, $pos, $lengthSize);
-				if ($item !== null && $e === 0) {
-					$item->setLocation(
-						$construction,
-						$base,
-						$baseField,
-						$baseOffsetSize,
-						$base + $offset,
-						$length,
-						$offsetField,
-						$offsetSize,
-						$lengthField,
-						$lengthSize,
-						$extentCount === 1,
-					);
+				if ($field === $item->getOffsetField() || $length === 0 || !BMFFItem::isLocatable($base, $offset, $length)) {
+					continue;   // the item's own extent, or one that locates nothing
+				}
+				if ($base + $offset < $to && $base + $offset + $length > $from) {
+					return true;
 				}
 			}
 		}
+		return false;
+	}
+
+	/**
+	 * Finds the media data box whose payload wholly holds the bytes an item locates.
+	 * @param BMFFItem $item The item.
+	 * @return ?array{0: BMFFBox, 1: int} The box and where in its payload the bytes begin;
+	 *   null when the item locates nothing or its bytes are not inside one such box.
+	 */
+	private function findExtentHome(BMFFItem $item): ?array
+	{
+		$from = $item->getOffset();
+		$to = $from + $item->getLength();
+		$end = 0;
+		foreach ($this->_boxes as $box) {
+			$whole = strlen($box->toBinary());
+			$start = $end + $whole - strlen($box->getPayload());
+			$end += $whole;
+			if ($box->getType() === self::MediaDataBox && $to > $from && $from >= $start && $to <= $end) {
+				return [$box, $from - $start];
+			}
+		}
+		return null;
 	}
 
 	/**

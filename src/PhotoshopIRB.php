@@ -67,7 +67,8 @@ class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableI
 	 * Parses an APP13 payload (or bare 8BIM data), resynchronizing on the 8BIM
 	 * signature to tolerate the padding deviations Photoshop itself writes.
 	 * @param string $data The payload; multiple concatenated APP13 payloads are handled.
-	 * @return false|PhotoshopIRB The parsed set, or false when no resource was found.
+	 * @return false|PhotoshopIRB The parsed set, or false when no resource was found or the
+	 *   data holds more resources than the {@see ImageFile::getMaxParts() part ceiling} allows.
 	 */
 	public static function parse(string $data): false|PhotoshopIRB
 	{
@@ -87,6 +88,9 @@ class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableI
 			}
 			$size = unpack('N', substr($data, $sizeAt, 4))[1];
 			$payload = substr($data, $sizeAt + 4, $size);
+			if (!ImageFile::allowsPartCount(count($irb->_resources) + 1, $len)) {
+				return false;   // a block of nothing but empty resources: absent, like any other that does not parse
+			}
 			$irb->_resources[] = new PhotoshopResource($id, $payload, $name);
 			$next = min($len, max($sizeAt + 4 + $size + ($size & 1), $pos + 4));
 			// Resynchronize: Photoshop sometimes mispads, so trust the next signature.

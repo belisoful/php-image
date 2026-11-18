@@ -10,6 +10,7 @@
 
 namespace Belisoful\Image\BMFF;
 
+use Belisoful\Image\ImageFile;
 use Belisoful\Image\StreamIOTrait;
 
 /**
@@ -139,14 +140,22 @@ class BMFFBox
 	 * The walk is tolerant: a length that does not fit the data stops it rather than
 	 * throwing, and whatever is left over is returned as the remainder so a caller can
 	 * rewrite the sequence byte-faithfully.
+	 *
+	 * Every box, at every depth, counts against the {@see ImageFile::getMaxParts() part
+	 * ceiling} of the sequence the walk started on.
 	 * @param string $bytes The bytes holding the sequence.
 	 * @param int $depth The nesting depth of the sequence.
+	 * @param int $count The boxes counted so far in the walk, by reference; a caller starting
+	 *   a walk leaves it out.
+	 * @param ?int $total The length of the data the walk started on; null for these bytes.
+	 * @throws \UnexpectedValueException When the walk meets more boxes than its ceiling and length allow.
 	 * @return array{0: array<int, static>, 1: string} The boxes and the trailing remainder.
 	 */
-	public static function parseSequence(string $bytes, int $depth = 0): array
+	public static function parseSequence(string $bytes, int $depth = 0, int &$count = 0, ?int $total = null): array
 	{
 		$boxes = [];
 		$len = strlen($bytes);
+		$total ??= $len;
 		$pos = 0;
 		while ($pos + 8 <= $len) {
 			$boxLength = unpack('N', substr($bytes, $pos, 4))[1];
@@ -170,6 +179,7 @@ class BMFFBox
 			if ($boxLength < $headerSize || $pos + $boxLength > $len) {
 				break;
 			}
+			ImageFile::assertPartCount(++$count, $total);
 			$payload = substr($bytes, $pos + $headerSize, $boxLength - $headerSize);
 			$box = new static($type);
 			$box->_usesLargeSize = $usesLargeSize;
@@ -177,7 +187,7 @@ class BMFFBox
 			if (static::isContainerType($type) && $depth < static::MaxDepth) {
 				$prefix = static::fullBoxHeaderLength($type);
 				$box->_fullBoxHeader = substr($payload, 0, $prefix);
-				[$box->_children, $box->_remainder] = static::parseSequence(substr($payload, $prefix), $depth + 1);
+				[$box->_children, $box->_remainder] = static::parseSequence(substr($payload, $prefix), $depth + 1, $count, $total);
 			} else {
 				$box->_payload = $payload;
 				$box->_isOpaque = true;   // including a container stopped by the depth cap

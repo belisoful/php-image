@@ -348,6 +348,7 @@ class BMFFFileTest extends PHPUnit\Framework\TestCase
 
 	public function testRepointingAnItemMovesNothingThatWasAlreadyThere(): void
 	{
+		$old = "\x00\x00\x00\x00MM\x00\x2a\x00\x00\x00\x08";
 		$bytes = $this->heif();
 		$bmff = BMFFFile::fromString($bytes);
 		$item = $bmff->getItem(BMFFItem::ExifType);
@@ -356,19 +357,209 @@ class BMFFFileTest extends PHPUnit\Framework\TestCase
 		$bmff->setItemData($item, 'a considerably longer exif payload than before');
 		$out = $bmff->toBinary();
 
-		// Every byte of the original file is where it was, except the two iloc fields.
+		// Every byte of the original file is where it was, except the two iloc fields and
+		// the item's old bytes, which are zeroed rather than left behind.
+		$was = strpos($bytes, $old);
 		$differing = [];
 		for ($i = 0; $i < strlen($bytes); $i++) {
-			if ($out[$i] !== $bytes[$i]) {
+			if ($out[$i] !== $bytes[$i] && ($i < $was || $i >= $was + strlen($old))) {
 				$differing[] = $i;
 			}
 		}
 		self::assertCount(2, $differing, 'only the extent offset and length change');
+		self::assertSame(str_repeat("\0", strlen($old)), substr($out, $was, strlen($old)), 'the old bytes are zeroed');
 		self::assertSame(strpos($bytes, 'mdat'), strpos($out, 'mdat'), 'the media does not move');
 		self::assertGreaterThan(strlen($bytes), strlen($out), 'the new bytes are appended');
 
 		$round = BMFFFile::fromString($out);
 		self::assertSame('a considerably longer exif payload than before', $round->getItemData($round->getItem(BMFFItem::ExifType)));
+	}
+
+	public function testBytesNoLongerThanTheOldAreWrittenOverThem(): void
+	{
+		$bytes = $this->heif(BMFFItem::ExifType, 'the name of a person');
+		$bmff = BMFFFile::fromString($bytes);
+
+		$bmff->setItemData($bmff->getItem(BMFFItem::ExifType), 'nobody');
+		$out = $bmff->toBinary();
+
+		self::assertSame(strlen($bytes), strlen($out), 'the slot keeps its size, so nothing is appended');
+		self::assertSame(1, substr_count($out, 'mdat'));
+		self::assertStringNotContainsString('person', $out, 'none of the old bytes are left behind');
+		self::assertStringEndsWith('nobody' . str_repeat("\0", 14), $out, 'the remainder of the slot is zeroed');
+		$round = BMFFFile::fromString($out);
+		self::assertSame('nobody', $round->getItemData($round->getItem(BMFFItem::ExifType)));
+
+		// The same length is the same case, and so is nothing at all.
+		$bmff->setItemData($bmff->getItem(BMFFItem::ExifType), 'no one');
+		self::assertSame(strlen($bytes), strlen($bmff->toBinary()));
+		$bmff->setItemData($bmff->getItem(BMFFItem::ExifType), '');
+		self::assertStringEndsWith(str_repeat("\0", 20), $bmff->toBinary());
+		self::assertNull($bmff->getItemData($bmff->getItem(BMFFItem::ExifType)));
+
+		// An emptied item locates nothing, so its next bytes have no slot to go back into.
+		$bmff->setItemData($bmff->getItem(BMFFItem::ExifType), 'x');
+		self::assertSame(2, substr_count($bmff->toBinary(), 'mdat'));
+	}
+
+	/**
+	 * A still whose `mdat` holds 'AAAABBBBCCCC', with an Exif item over the middle four bytes
+	 * and whatever second entry the caller gives the location table.
+	 * @param string $other The second `iloc` entry, given the offset of the media bytes.
+	 * @param int $version The `iloc` version.
+	 * @param string $infe The second item's description.
+	 */
+	private function heifSharing(callable $other, int $version = 0, ?string $infe = null): string
+	{
+		$ftyp = $this->ftyp();
+		$build = function (int $media) use ($other, $version, $infe): string {
+			$method = $version === 0 ? '' : pack('n', BMFFItem::FileConstruction);
+			return $this->meta(
+				$this->iinf($this->infe(1, BMFFItem::ExifType, 'Exif'), $infe ?? $this->infe(2, 'hvc1', 'image')),
+				$this->fullBox('iloc', chr(0x44) . chr(0x40) . pack('n', 2)
+					. pack('n', 1) . $method . pack('n', 0) . pack('N', $media + 4) . pack('n', 1) . pack('N', 0) . pack('N', 4)
+					. $other($media), $version),
+				$this->fullBox('pitm', pack('n', 2)),
+			);
+		};
+		return $ftyp . $build(strlen($ftyp) + strlen($build(0)) + 8) . $this->box('mdat', 'AAAABBBBCCCC');
+	}
+
+	public function testBytesAnotherExtentSharesAreNeitherReusedNorZeroed(): void
+	{
+		$entry = fn (int $base, array $extents, string $method = '') => pack('n', 2) . $method . pack('n', 0) . pack('N', $base) . pack('n', count($extents))
+			. implode('', array_map(fn (array $e) => pack('N', $e[0]) . pack('N', $e[1]), $extents));
+		$shared = [
+			'an extent over the same bytes' => fn (int $m) => $entry($m, [[2, 8]]),
+			'a later extent of a split item' => fn (int $m) => $entry($m, [[0, 2], [6, 6]]),
+		];
+		foreach ($shared as $case => $other) {
+			$bmff = BMFFFile::fromString($this->heifSharing($other));
+			$bmff->setItemData($bmff->getItem(BMFFItem::ExifType), 'xy');
+			$out = $bmff->toBinary();
+			self::assertStringContainsString('AAAABBBBCCCC', $out, "$case: the shared bytes are left as they were");
+			self::assertSame(2, substr_count($out, 'mdat'), "$case: the new bytes are appended instead");
+			self::assertSame('xy', BMFFFile::fromString($out)->getItemData(BMFFFile::fromString($out)->getItem(BMFFItem::ExifType)));
+		}
+
+		$alone = [
+			'extents on either side' => [fn (int $m) => $entry($m, [[0, 4], [8, 4]]), 0],
+			'an empty extent inside it' => [fn (int $m) => $entry($m, [[5, 0]]), 0],
+			'an extent measured from idat' => [fn (int $m) => $entry(0, [[4, 4]], pack('n', BMFFItem::IdatConstruction)), 1],
+			'an extent no file could hold' => [fn (int $m) => $entry(0, [[0xFFFFFFFF, 0xFFFFFFFF]]), 0],
+			'an entry declaring more extents than it has' => [fn (int $m) => pack('n', 2) . pack('n', 0) . pack('N', $m) . pack('n', 9) . pack('N', 0) . pack('N', 2), 0],
+		];
+		foreach ($alone as $case => [$other, $version]) {
+			$bmff = BMFFFile::fromString($this->heifSharing($other, $version));
+			$bmff->setItemData($bmff->getItem(BMFFItem::ExifType), 'xy');
+			self::assertStringEndsWith("AAAAxy\0\0CCCC", $bmff->toBinary(), "$case: the item's own bytes are written over");
+		}
+	}
+
+	public function testBytesOutsideAMediaDataBoxAreLeftAlone(): void
+	{
+		// The Exif item is located inside the ftyp box: bytes no item should be rewriting.
+		$ftyp = $this->ftyp();
+		$bytes = $ftyp . $this->meta(
+			$this->iinf($this->infe(1, BMFFItem::ExifType, 'Exif')),
+			$this->iloc([[1, 8, 0, 4]]),
+		) . $this->box('mdat', 'media');
+		$bmff = BMFFFile::fromString($bytes);
+
+		$bmff->setItemData($bmff->getItem(BMFFItem::ExifType), 'xy');
+
+		self::assertStringStartsWith($ftyp, $bmff->toBinary(), 'the box the extent pointed into is untouched');
+		self::assertStringEndsWith($this->box('mdat', 'xy'), $bmff->toBinary());
+	}
+
+	//
+	// ─── A location table that cannot be believed ────────────────────────────
+	//
+
+	public function testATableOfZeroWidthFieldsCostsNoMoreThanItsEntries(): void
+	{
+		// Every field zero bytes wide and every item declaring 65535 extents: reading each
+		// extent would be 65535 steps an item with none of them moving forward.
+		$entries = '';
+		for ($id = 1; $id <= 10000; $id++) {
+			$entries .= pack('n', $id) . pack('n', 0) . pack('n', 0xFFFF);
+		}
+		$bytes = $this->ftyp() . $this->meta(
+			$this->iinf($this->infe(1, BMFFItem::ExifType, 'Exif')),
+			$this->fullBox('iloc', "\x00\x00" . pack('n', 0xFFFF) . $entries),
+		) . $this->box('mdat', 'media');
+
+		$bmff = BMFFFile::fromString($bytes);
+
+		self::assertCount(1, $bmff->getItems());
+		self::assertNull($bmff->getEXIF(), 'an extent with no offset and no length locates nothing');
+		self::assertFalse($bmff->getItems()[0]->getIsWritable());
+	}
+
+	public function testAnItemDeclaringNoExtentsHasNoLocation(): void
+	{
+		$bytes = $this->ftyp() . $this->meta(
+			$this->iinf($this->infe(1, BMFFItem::ExifType, 'Exif')),
+			$this->fullBox('iloc', chr(0x44) . chr(0x40) . pack('n', 2)
+				. pack('n', 1) . pack('n', 0) . pack('N', 0) . pack('n', 0)
+				. pack('n', 9) . pack('n', 0) . pack('N', 0) . pack('n', 1) . pack('N', 0) . pack('N', 4)),
+		) . $this->box('mdat', 'media');
+
+		$item = BMFFFile::fromString($bytes)->getItems()[0];
+
+		self::assertSame(0, $item->getLength());
+		self::assertSame(-1, $item->getOffsetField(), 'nothing was recorded for it, nor for the entry no item answers to');
+	}
+
+	public function testALocationNoFileCouldHoldIsNotRecorded(): void
+	{
+		// iloc can spell its fields in eight bytes, so it can state numbers whose sum is no
+		// longer an integer, and ones that read as negative.
+		$near = "\x7F\xFF\xFF\xFF\xFF\xFF\xFF\xF0";
+		$zero = pack('J', 0);
+		$cases = [
+			'an offset and length near 2^63' => [$zero, $near, "\x7F\xFF\xFF\xFF\xFF\xFF\xFF\xFF"],
+			'a base and an offset whose sum overflows' => [$near, $near, pack('J', 4)],
+			'an offset with its top bit set' => [$zero, "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xF0", pack('J', 4)],
+			'a length with its top bit set' => [$zero, pack('J', 8), "\x80\x00\x00\x00\x00\x00\x00\x00"],
+		];
+		foreach ($cases as $case => [$base, $offset, $length]) {
+			$bytes = $this->ftyp() . $this->meta(
+				$this->iinf($this->infe(1, BMFFItem::ExifType, 'Exif')),
+				$this->fullBox('iloc', chr(0x88) . chr(0x80) . pack('n', 1)
+					. pack('n', 1) . pack('n', 0) . pack('n', 0) . $base . pack('n', 1) . $offset . $length, 1),
+				$this->fullBox('pitm', pack('n', 1)),
+			) . $this->box('mdat', "\x00\x00\x00\x00MM\x00\x2a\x00\x00\x00\x08");
+			$bmff = BMFFFile::fromString($bytes);
+
+			self::assertNull($bmff->getEXIF(), "$case: the item reads as holding nothing");
+			self::assertFalse($bmff->getItems()[0]->getIsWritable(), $case);
+			self::assertSame(0, $bmff->clearPrivateData(), $case);
+			try {
+				$bmff->setXmpText('<x:xmpmeta xmlns:x="adobe:ns:meta/"/>');
+				self::fail("$case: a write that has to move the item is refused");
+			} catch (\RuntimeException $e) {
+				self::assertStringContainsString('does not fit', $e->getMessage(), $case);
+			}
+			self::assertSame($bytes, $bmff->toBinary(), "$case: the refusal leaves the file as it was");
+		}
+
+		// Such an extent overlaps nothing, so it does not stop a sound item beside it from
+		// being written over where it lies.
+		$ftyp = $this->ftyp();
+		$build = fn (int $media) => $this->meta(
+			$this->iinf($this->infe(1, BMFFItem::ExifType, 'Exif'), $this->infe(2, 'hvc1', 'image')),
+			$this->fullBox('iloc', chr(0x88) . chr(0x80) . pack('n', 2)
+				. pack('n', 1) . pack('n', 0) . pack('n', 0) . pack('J', $media) . pack('n', 1) . $zero . pack('J', 4)
+				. pack('n', 2) . pack('n', 0) . pack('n', 0) . $zero . pack('n', 1) . "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xF0" . pack('J', 4), 1),
+		);
+		$bmff = BMFFFile::fromString($ftyp . $build(strlen($ftyp) + strlen($build(0)) + 8) . $this->box('mdat', 'AAAA'));
+		$bmff->setItemData($bmff->getItem(BMFFItem::ExifType), 'xy');
+		self::assertStringEndsWith($this->box('mdat', "xy\0\0"), $bmff->toBinary());
+
+		self::assertTrue(BMFFItem::isLocatable(0, BMFFItem::MaxAddress, BMFFItem::MaxAddress));
+		self::assertFalse(BMFFItem::isLocatable(BMFFItem::MaxAddress + 1, 0, 0));
+		self::assertFalse(BMFFItem::isLocatable(0, 0, -1));
 	}
 
 	public function testAnItemThatCannotBeRepointedThrows(): void

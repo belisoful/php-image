@@ -56,6 +56,18 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	{
 	}
 
+	/**
+	 * @var int The default {@see getMaxParts() part ceiling}: 2^16 structural parts before
+	 *   a file's own length earns it any more.
+	 */
+	public const DefaultMaxParts = 0x10000;
+
+	/** @var int The bytes of file length that allow one part beyond the ceiling. */
+	public const BytesPerExtraPart = 256;
+
+	/** @var int The most structural parts a file may hold whatever its length. */
+	private static int $_maxParts = self::DefaultMaxParts;
+
 	/** @var string The raw image bytes. */
 	private string $_bytes = '';
 
@@ -70,6 +82,62 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 
 	/** @var ?string The embedded ICC color profile, or null when absent. */
 	private ?string $_iccProfile = null;
+
+	/**
+	 * Returns the part ceiling: how many structural parts a file may hold whatever its
+	 * length.  A part is what a parser makes one record of: a JPEG segment, a PNG or RIFF
+	 * chunk, an ISO base media box, a GIF block or data sub-block, a TIFF directory entry,
+	 * a Photoshop resource, an IPTC dataset.
+	 * Each costs a few hundred bytes of memory however small it is on disk, so without a
+	 * ceiling a file made of nothing but empty parts costs twenty to a hundred times its
+	 * own size and exhausts the memory limit: a fatal error no caller can catch.
+	 *
+	 * A file is allowed this many parts plus one more for every {@see BytesPerExtraPart}
+	 * bytes of its length, so a large file of ordinary parts — a long animation, a PNG of
+	 * many `IDAT` chunks, a movie's media list — is never refused for being large.
+	 * @return int The ceiling, in parts.
+	 */
+	public static function getMaxParts(): int
+	{
+		return self::$_maxParts;
+	}
+
+	/**
+	 * Sets the part ceiling.  Raise it, with the memory limit, to open a file that really
+	 * does hold that many small parts.
+	 * @param ?int $parts The ceiling in parts, or null to restore {@see DefaultMaxParts}.
+	 */
+	public static function setMaxParts(?int $parts): void
+	{
+		self::$_maxParts = $parts ?? self::DefaultMaxParts;
+	}
+
+	/**
+	 * Indicates whether a count of parts is within what the {@see getMaxParts() ceiling} and
+	 * a length allow.  The metadata parsers ask this rather than {@see assertPartCount()},
+	 * because metadata over the ceiling reads as absent instead of refusing the file.
+	 * @param int $count The parts counted so far.
+	 * @param int $bytes The length of the data they were counted in; zero when unknown.
+	 * @return bool Whether the count is allowed.
+	 */
+	public static function allowsPartCount(int $count, int $bytes = 0): bool
+	{
+		return $count <= self::$_maxParts + intdiv($bytes, self::BytesPerExtraPart);
+	}
+
+	/**
+	 * Refuses a structure holding more parts than the {@see getMaxParts() ceiling} and its
+	 * length allow.  A parser calls this as it counts, before it records the part.
+	 * @param int $count The parts counted so far, this one included.
+	 * @param int $bytes The length of the data they were counted in; zero when unknown.
+	 * @throws \UnexpectedValueException When the structure is over the ceiling.
+	 */
+	public static function assertPartCount(int $count, int $bytes = 0): void
+	{
+		if (!self::allowsPartCount($count, $bytes)) {
+			throw new \UnexpectedValueException(sprintf('The data holds more than the %d parts its ceiling and length allow; raise it with ImageFile::setMaxParts().', self::$_maxParts + intdiv($bytes, self::BytesPerExtraPart)));
+		}
+	}
 
 	/**
 	 * Creates a reader from a raw byte string.

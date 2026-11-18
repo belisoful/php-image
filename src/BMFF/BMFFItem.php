@@ -49,6 +49,13 @@ class BMFFItem
 	/** The extent offset is relative to the start of the `idat` box's payload. */
 	public const IdatConstruction = 1;
 
+	/**
+	 * The largest base offset, extent offset or length an item may state and still be
+	 * located: 2^60, an exbibyte.  `iloc` can spell these in eight bytes, so a file can state
+	 * values whose sum is no longer an integer; nothing past this is a place in any file.
+	 */
+	public const MaxAddress = 0x1000000000000000;
+
 	/** @var int The item id. */
 	private int $_id;
 
@@ -248,6 +255,31 @@ class BMFFItem
 		$this->_lengthField = $lengthField;
 		$this->_lengthWidth = $lengthWidth;
 		$this->_isSingleExtent = $isSingleExtent;
+	}
+
+	/**
+	 * Indicates whether a base offset, an extent offset and a length name a place a file
+	 * could hold: none negative — which is how an eight-byte field with its top bit set
+	 * reads — and none past {@see MaxAddress}, so that adding them, or moving the result,
+	 * stays within an integer.
+	 * @param int $base The base offset.
+	 * @param int $offset The extent offset, measured from the base.
+	 * @param int $length The extent length.
+	 * @return bool Whether the three can be recorded as a location.
+	 */
+	public static function isLocatable(int $base, int $offset, int $length): bool
+	{
+		return min($base, $offset, $length) >= 0 && max($base, $offset, $length) <= self::MaxAddress;
+	}
+
+	/**
+	 * Returns the byte position of the extent offset field within the `iloc` payload, which
+	 * tells this item's extent from every other in the table.
+	 * @return int The position, or -1 when the item has no recorded location.
+	 */
+	public function getOffsetField(): int
+	{
+		return $this->_offsetField;
 	}
 
 	/**

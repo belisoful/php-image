@@ -55,6 +55,12 @@ class RIFFList extends ImageChunk
 	/** @var bool Whether the container's sizes are big-endian, as an `RIFX` container's are. */
 	private bool $_bigEndian = false;
 
+	/** @var int The chunks counted in the walk this list was found by; shared with it by reference. */
+	private int $_partCount = 0;
+
+	/** @var ?int The length of the data that walk covers, or null when this list is a walk of its own. */
+	private ?int $_partBytes = null;
+
 	/**
 	 * @param string $type The four-character chunk type (`LIST`).
 	 * @param int $size The payload size in bytes.
@@ -118,7 +124,23 @@ class RIFFList extends ImageChunk
 	}
 
 	/**
+	 * Joins this list to the walk that found it, so the chunks it holds count against the
+	 * same {@see ImageFile::getMaxParts() part ceiling} as the container's own.  A list is
+	 * walked only when it is first asked for its children, which is why the count is shared
+	 * rather than passed: without it every list would start again from nothing, and a file of
+	 * many lists would hold many times the ceiling.
+	 * @param int $count The chunks counted so far, by reference.
+	 * @param int $bytes The length of the data the walk covers, by reference.
+	 */
+	public function sharePartCount(int &$count, int &$bytes): void
+	{
+		$this->_partCount = &$count;
+		$this->_partBytes = &$bytes;
+	}
+
+	/**
 	 * Returns the child chunks in order, walking the payload on the first call.
+	 * @throws \UnexpectedValueException When the walk meets more chunks than its ceiling and length allow.
 	 * @return array<int, ImageChunk> The child chunks.
 	 */
 	public function getChunks(): array
@@ -126,7 +148,8 @@ class RIFFList extends ImageChunk
 		if ($this->_children === null) {
 			$payload = parent::getData();
 			$this->_listType = substr($payload, 0, 4);
-			[$this->_children, $this->_remainder] = RIFFContainer::parseChunks($payload, 4, strlen($payload), $this->getOffset(), $this->_depth + 1, $this->_bigEndian);
+			$this->_partBytes ??= strlen($payload);
+			[$this->_children, $this->_remainder] = RIFFContainer::parseChunks($payload, 4, strlen($payload), $this->getOffset(), $this->_depth + 1, $this->_bigEndian, [], $this->_partCount, $this->_partBytes);
 		}
 		return $this->_children;
 	}

@@ -1,5 +1,7 @@
 <?php
 
+use Belisoful\Image\ImageFile;
+use Belisoful\Image\JPEGImage;
 use Belisoful\Image\TIFF\TIFFDataType;
 use Belisoful\Image\TIFF\TIFFDocument;
 use Belisoful\Image\TIFF\TIFFIfd;
@@ -253,6 +255,79 @@ class TIFFDocumentTest extends PHPUnit\Framework\TestCase
 		self::assertSame('abc', $tiff->getIfd(0)->getTagValue(271));
 		self::assertSame('def', $tiff->getIfd(1)->getTagValue(272));
 		self::assertNotEmpty(array_filter($tiff->getWarnings(), fn ($w) => str_contains($w, 'loops back to offset 8')));
+	}
+
+	/** IFD0 holding the Exif IFD pointer as many times as asked, each one back at IFD0. */
+	private function selfPointingTiff(int $pointers): string
+	{
+		return "MM\x00\x2A\x00\x00\x00\x08" . pack('n', $pointers)
+			. str_repeat(pack('nnNN', 0x8769, 4, 1, 8), $pointers) . pack('N', 0);
+	}
+
+	/**
+	 * A chain of IFDs with no loop in it: each points at the next twice, through the Exif
+	 * and the GPS pointer, so following every pointer doubles the work at every level.
+	 * @param int $levels
+	 */
+	private function twicePointingTiff(int $levels): string
+	{
+		$bytes = "MM\x00\x2A\x00\x00\x00\x08";
+		for ($i = 1; $i < $levels; $i++) {
+			$next = 8 + $i * 30;
+			$bytes .= pack('n', 2) . pack('nnNN', 0x8769, 4, 1, $next) . pack('nnNN', 0x8825, 4, 1, $next) . pack('N', 0);
+		}
+		return $bytes . pack('n', 0) . pack('N', 0);   // the last level points nowhere
+	}
+
+	public function testASubIfdPointerBackAtAnIfdAlreadyReadIsNotFollowed()
+	{
+		// Two pointers back at their own IFD used to double the work at each of 64 levels.
+		$tiff = TIFFDocument::fromString($this->selfPointingTiff(2));
+
+		self::assertCount(1, $tiff->getIfds());
+		self::assertNull($tiff->getIfd(0)->getTag(0x8769)->getSubIfd(), 'IFD0 is not read again as its own sub-IFD');
+		self::assertCount(2, array_filter($tiff->getWarnings(), fn ($w) => str_contains($w, 'tag 34665 points at the IFD at offset 8, which was already read')));
+	}
+
+	public function testEachIfdIsReadOnceHoweverManyPointersLeadToIt()
+	{
+		$tiff = TIFFDocument::fromString($this->twicePointingTiff(40));
+
+		$depth = 0;
+		for ($ifd = $tiff->getIfd(0); $ifd !== null; $ifd = $ifd->getTag(0x8769)?->getSubIfd()) {
+			$depth++;
+			self::assertNull($ifd->getTag(0x8825)?->getSubIfd(), 'the second pointer to the same IFD is not followed');
+		}
+		self::assertSame(40, $depth, 'the first pointer at every level is');
+		self::assertCount(39, array_filter($tiff->getWarnings(), fn ($w) => str_contains($w, 'which was already read')));
+	}
+
+	public function testADocumentOverThePartCeilingIsRefused()
+	{
+		$entries = fn (int $n) => "MM\x00\x2A\x00\x00\x00\x08" . pack('n', $n) . str_repeat(pack('nnNN', 0x0100, 4, 1, 1), $n) . pack('N', 0);
+		ImageFile::setMaxParts(8);
+		try {
+			self::assertCount(1, TIFFDocument::fromString($entries(8))->getIfds());
+			try {
+				TIFFDocument::fromString($entries(12));
+				self::fail('twelve entries are over a ceiling of eight');
+			} catch (\UnexpectedValueException $e) {
+				self::assertStringContainsString('parts', $e->getMessage());
+			}
+			// A JPEG keeps such a block as a segment it does not interpret, and still opens.
+			$jpeg = JPEGImage::fromString("\xFF\xD8\xFF\xE1" . pack('n', 8 + strlen($entries(12))) . "Exif\0\0" . $entries(12) . "\xFF\xD9");
+			self::assertNull($jpeg->getEXIF());
+			self::assertStringContainsString($entries(12), $jpeg->toBinary());
+
+			// A read through readIfdAt() is a count of its own each time.
+			$reader = new TIFFDocument();
+			foreach ([1, 2] as $read) {
+				[$ifd] = $reader->readIfdAt($entries(6), 8);
+				self::assertNotNull($ifd, "read $read");
+			}
+		} finally {
+			ImageFile::setMaxParts(null);
+		}
 	}
 
 	public function testParseWarnsOnAnIfdOutsideTheData()

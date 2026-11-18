@@ -788,6 +788,7 @@ class JPEGImage extends ImageFile
 		$this->scanDimensions($bytes);
 
 		$chunks = ['icc' => [], 'irb' => [], 'jumbf' => [], 'xmpext' => []];
+		$parts = 0;
 		$i = 2;
 		while ($i + 1 < $len) {
 			if (ord($bytes[$i]) !== self::MARKER_PREFIX) {
@@ -808,6 +809,7 @@ class JPEGImage extends ImageFile
 			}
 			$segLen = (ord($bytes[$i + 2]) << 8) | ord($bytes[$i + 3]);
 			$payload = substr($bytes, $i + 4, $segLen - 2);
+			self::assertPartCount(++$parts, $len);
 			$this->ingestSegment($marker, $payload, $chunks);
 			$i += 2 + $segLen;
 		}
@@ -877,6 +879,7 @@ class JPEGImage extends ImageFile
 			throw new \UnexpectedValueException(sprintf('JPEG data is invalid: %s.', 'missing SOI marker'));
 		}
 		$chunks = ['icc' => [], 'irb' => [], 'jumbf' => [], 'xmpext' => []];
+		$parts = 0;
 		while (($marker = $this->nextMarker($binary)) !== null) {
 			[$m, $markerOffset] = $marker;
 			if ($m === self::SOS || $m === self::EOI) {   // the rest of the file is the scan
@@ -890,6 +893,7 @@ class JPEGImage extends ImageFile
 			}
 			$segLen = (int) unpack('n', $binary->readBytes(2))[1];
 			$payload = $binary->readBytes($segLen - 2);
+			self::assertPartCount(++$parts, $binary->tell());
 			if (self::isStartOfFrameMarker($m) || $m === self::DHP) {
 				$this->readStartOfFrame($payload);
 			} elseif ($m === self::DNL) {

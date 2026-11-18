@@ -1,5 +1,6 @@
 <?php
 
+use Belisoful\Image\ImageFile;
 use Belisoful\Image\Meta\EXIF;
 use Belisoful\Image\TIFF\TIFFDataType;
 use Belisoful\Image\TIFF\TIFFDocument;
@@ -264,6 +265,32 @@ class TIFFScanTest extends PHPUnit\Framework\TestCase
 		self::assertSame('abc', $scanned->getIfd(0)->getTagValue(271));
 		self::assertSame('def', $scanned->getIfd(1)->getTagValue(272));
 		self::assertNotEmpty(array_filter($scanned->getWarnings(), fn ($w) => str_contains($w, 'loops back to offset 8')));
+	}
+
+	public function testScanDoesNotFollowASubIfdPointerBackAtAnIfdAlreadyRead()
+	{
+		// IFD0 holds the Exif IFD pointer twice, both back at IFD0 itself.
+		$bytes = "MM\x00\x2A\x00\x00\x00\x08" . pack('n', 2) . str_repeat(pack('nnNN', 0x8769, 4, 1, 8), 2) . pack('N', 0);
+
+		$scanned = TIFFDocument::scanStream(TestIOHelper::dataResource($bytes));
+
+		self::assertCount(1, $scanned->getIfds());
+		self::assertNull($scanned->getIfd(0)->getTag(0x8769)->getSubIfd());
+		self::assertCount(2, array_filter($scanned->getWarnings(), fn ($w) => str_contains($w, 'tag 34665 points at the IFD at offset 8, which was already read')));
+	}
+
+	public function testScanRefusesADocumentOverThePartCeiling()
+	{
+		$bytes = "MM\x00\x2A\x00\x00\x00\x08" . pack('n', 12) . str_repeat(pack('nnNN', 0x0100, 4, 1, 1), 12) . pack('N', 0);
+		ImageFile::setMaxParts(8);
+		try {
+			TIFFDocument::scanStream(TestIOHelper::dataResource($bytes));
+			self::fail('twelve entries are over a ceiling of eight');
+		} catch (\UnexpectedValueException $e) {
+			self::assertStringContainsString('parts', $e->getMessage());
+		} finally {
+			ImageFile::setMaxParts(null);
+		}
 	}
 
 	public function testScanWarnsOnAnIfdOutsideTheData()

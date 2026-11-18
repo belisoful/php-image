@@ -131,6 +131,8 @@ class RIFFContainer
 		$riff->_formType = substr($header, 8, 4);
 		$big = $riff->getIsBigEndian();
 		$sizes64 = [];
+		$count = 0;
+		$walked = 0;
 		while (true) {
 			$start = $binary->tell();
 			try {
@@ -144,6 +146,8 @@ class RIFFContainer
 				$size = $sizes64[$id];
 			}
 			$whole = 8 + $size + ($size & 1); // header + payload + even-length pad
+			$walked = $start + $whole;
+			ImageFile::assertPartCount(++$count, $walked);
 			$isList = $id === RIFFChunkType::RiffList && $size >= 4;
 			$qualified = $isList ? $id . ':' . $binary->readBytes(4) : $id;
 			if ($isList) {
@@ -156,9 +160,13 @@ class RIFFContainer
 				if ($id === RIFFChunkType::DataSize64) {
 					$sizes64 = self::readSize64Chunk($payload);   // the first chunk sizes the rest
 				}
-				$riff->_chunks[] = $isList
+				$chunk = $isList
 					? new RIFFList($id, $size, $start + 8, $payload, 0, $big)
 					: new ImageChunk($id, $size, $start + 8, $payload);
+				if ($chunk instanceof RIFFList) {
+					$chunk->sharePartCount($count, $walked);
+				}
+				$riff->_chunks[] = $chunk;
 			}
 			$binary->seek($start + $whole);
 		}
@@ -480,11 +488,16 @@ class RIFFContainer
 	 * @param bool $bigEndian Whether the sizes are big-endian, as an `RIFX` container's are.
 	 * @param array<string, int> $sizes64 The real sizes of the chunks whose stored size is the
 	 *   {@see RIFFChunkType::Size64Sentinel}, keyed by chunk id, from a `ds64` chunk.
+	 * @param int $count The chunks counted so far against the {@see getMaxParts() part ceiling},
+	 *   by reference; a caller starting a walk leaves it out.  Every list found is joined to it.
+	 * @param ?int $total The length of the data the walk covers, by reference; null for these bytes.
+	 * @throws \UnexpectedValueException When the walk meets more chunks than its ceiling and length allow.
 	 * @return array{0: array<int, ImageChunk>, 1: string} The chunks and the trailing remainder.
 	 */
-	public static function parseChunks(string $bytes, int $start, int $end, int $origin = 0, int $depth = 0, bool $bigEndian = false, array $sizes64 = []): array
+	public static function parseChunks(string $bytes, int $start, int $end, int $origin = 0, int $depth = 0, bool $bigEndian = false, array $sizes64 = [], int &$count = 0, ?int &$total = null): array
 	{
 		$chunks = [];
+		$total ??= strlen($bytes);
 		$i = $start;
 		while ($i + 8 <= $end) {
 			$id = substr($bytes, $i, 4);
@@ -493,8 +506,11 @@ class RIFFContainer
 				$size = $sizes64[$id];   // the real size lives in the ds64 chunk
 			}
 			$payload = substr($bytes, $i + 8, max(0, min($size, $end - $i - 8)));
+			ImageFile::assertPartCount(++$count, $total);
 			if ($id === RIFFChunkType::RiffList && strlen($payload) >= 4 && $depth < RIFFList::MaxDepth) {
-				$chunks[] = new RIFFList($id, $size, $origin + $i + 8, $payload, $depth, $bigEndian);
+				$list = new RIFFList($id, $size, $origin + $i + 8, $payload, $depth, $bigEndian);
+				$list->sharePartCount($count, $total);
+				$chunks[] = $list;
 			} else {
 				$chunks[] = new ImageChunk($id, $size, $origin + $i + 8, $payload);
 			}
