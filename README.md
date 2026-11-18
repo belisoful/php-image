@@ -41,8 +41,10 @@ Every format here is supported in both directions — reading and writing.
 - **ISO BMFF** — HEIF, AVIF, MP4 and QuickTime, told apart by the `ftyp` brand. Exif and XMP
   ride `meta` items on a still and the Adobe `uuid` box on a movie, the ICC profile rides a
   `colr` item property, and movie user data is read and written in both the QuickTime `udta`
-  text-atom and the iTunes `ilst` conventions. Nothing in the file moves: new bytes go into a
-  fresh `mdat` and only the offset that names them is rewritten.
+  text-atom and the iTunes `ilst` conventions. Nothing in the file moves: an item's new bytes
+  are written over its old ones when they fit and into a fresh `mdat` when they do not, and the
+  old bytes are zeroed either way, so what was removed is gone from the file and not merely
+  unreferenced.
 - **JPEG XL** — `Exif`, `xml ` (XMP) and `jumb` boxes over the container's box grammar, with
   the pixel dimensions read out of the codestream's bit-packed `SizeHeader`. A bare codestream
   is promoted to a container on the first write rather than refusing the write.
@@ -85,12 +87,16 @@ describes the picture itself, so what you get back is still a useful photo.
 ranges and bridged to the framework's reserved-space streams, so a consumer can edit around
 them with the same protection the writer itself applies.
 
-Files from strangers get two ceilings, because a decoder that sizes a buffer from what a file
-claims can be made to ask for gigabytes by a file of a few hundred bytes. A compressed PNG
-chunk inflates to at most `PNGImage::MaxInflatedSize` (64 MiB) and reads as absent past it, and
-the pure-PHP raster decoders refuse a TIFF or GIF frame that declares more pixels than
-`ImageGraphics::getMaxPixels()` (2^28, a 16384 by 16384 raster; `setMaxPixels()` moves it).
-Reading and rewriting metadata never decodes the pixels, so neither applies there.
+Files from strangers get three ceilings, because a parser that takes a file at its word can
+be made to ask for gigabytes by a file of a few hundred bytes. A compressed PNG chunk inflates
+to at most `PNGImage::MaxInflatedSize` (16 MiB) and reads as absent past it. The pure-PHP
+raster decoders refuse a TIFF or GIF frame that declares more pixels than
+`ImageGraphics::getMaxPixels()` (2^28, a 16384 by 16384 raster; `setMaxPixels()` moves it);
+reading and rewriting metadata never decodes the pixels, so that one does not apply there.
+And every parser counts the parts it makes a record of — segments, chunks, boxes, blocks,
+directory entries — against `ImageFile::getMaxParts()`: 65,536, plus one more for every 256
+bytes of the file, so a file of nothing but empty parts is refused while a large file of
+ordinary ones never is (`setMaxParts()` moves it).
 
 ## Streams
 
@@ -580,7 +586,7 @@ $exif = $heic->getEXIF();                             // the Exif meta item
 $heic->getICCProfile();                               // the colr item property
 
 $exif->setValueByName('Artist', 'A. Photographer');
-$heic->setEXIF($exif);                                // appended in a fresh mdat; iloc repointed
+$heic->setEXIF($exif);                                // over the old bytes, or a fresh mdat    
 $heic->save('photo-out.heic');
 
 $movie = BMFFFile::fromFile('clip.mp4');

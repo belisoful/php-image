@@ -160,7 +160,9 @@ ext-brotli read path *and* a way to cover it in CI.
    appended in a fresh `mdat` and its `iloc` extent is patched in place**, which works because
    patching two numbers does not change `iloc`'s length. Measured on a real libheif HEIC:
    rewriting an item changes **exactly two bytes** of the original file, both inside `iloc`,
-   and `mdat` does not move. If a new offset or length would not fit the widths `iloc` already
+   and `mdat` does not move. Since revised so the old bytes do not stay behind: a write no
+   longer than the old bytes goes over them, and an appended one zeroes the slot it left
+   (`BMFFFile::setItemData()`). If a new offset or length would not fit the widths `iloc` already
    uses, the write throws rather than widening a field and shifting the file. Top-level boxes
    (the Adobe `uuid` XMP box) still use the AVI rule: in place at unchanged length, otherwise
    `free` over the old slot and append.

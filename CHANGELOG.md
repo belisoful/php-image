@@ -12,6 +12,14 @@ so.
 
 ### Added
 
+- **A part ceiling**: `ImageFile::getMaxParts()`, `setMaxParts()`, `assertPartCount()` and
+  `allowsPartCount()`. Every parser counts the parts it makes a record of — JPEG segments, PNG
+  and RIFF chunks, ISO BMFF boxes at every depth, GIF blocks and data sub-blocks, TIFF directory
+  entries — and a file may hold 65,536 of them plus one more for every 256 bytes of its length,
+  so a large file of ordinary parts is never refused for being large. A container over the
+  ceiling throws `\UnexpectedValueException`; metadata over it (Photoshop resources, IPTC
+  datasets) reads as absent. The count is per file: nested boxes pass it down, and a
+  `RIFFList` shares its container's (`sharePartCount()`).
 - **`TIFFImage::setEXIF()`** merges an EXIF into the TIFF instead of refusing it. A TIFF's IFD0
   is its EXIF IFD0, so every tag outside `TIFFImage::ImageTags` (the raster and layout tags plus
   the XMP, IPTC, IRB and ICC carriers) is removed and the given EXIF's other IFD0 tags are copied
@@ -49,6 +57,40 @@ so.
   the ceiling now throws before anything is allocated.
 - CI now covers PHP 8.4 and 8.5 alongside 8.2 and 8.3.
 
+### Security
+
+Reported privately, with proof-of-concept files, against v0.1.0 and the unreleased main. Each
+let a small file stop a PHP process or leave data behind that the caller had removed.
+
+- **TIFF sub-IFD pointers were followed without remembering where they led** (also in
+  v0.1.0). An IFD holding the Exif IFD pointer twice, both back at itself, doubled the work at
+  each of 64 levels: a 349-byte JPEG never finished opening. So did a chain of distinct IFDs
+  that each point twice at the next, with no loop in it. `TIFFDocument` now reads each IFD
+  once per parse, whichever pointer leads to it, and notes the others as warnings.
+- **An `iloc` table with zero-width fields cost 65535 steps an item.** A 60 KB HEIF took over
+  forty seconds to answer `getEXIF()`. Only the first extent of an item is modelled, so the
+  rest are stepped over rather than read.
+- **An `iloc` offset or length near 2^63 ended in a `\TypeError`**, on a write and, when the
+  base and the offset overflowed together, on a plain `getEXIF()`. A location that is not a
+  place in any file (`BMFFItem::isLocatable()`) is no longer recorded: the item reads as
+  holding nothing, and a write that would have to move it is refused with the documented
+  `\RuntimeException`.
+- **Rewriting a HEIF or AVIF item left its old bytes in the file.** Every `setEXIF()` or
+  `setXMP()` appended a new `mdat` and repointed the item, so earlier captions stayed readable
+  — and so did the whole original Exif, GPS position included, after `clearPrivateData()`
+  reported it removed. New bytes no longer than the old are now written over them and longer
+  ones appended as before, and the old bytes are zeroed either way. A scrub no longer grows
+  the file. Bytes that another `iloc` extent shares, or that lie outside an `mdat`, are not
+  the item's alone and are left as they are; bytes orphaned by an earlier version or another
+  tool are not found.
+- **A file of nothing but empty parts cost twenty to a hundred times its size in memory**,
+  because every segment, chunk, box and block becomes an object: a 3.8 MB JPEG of empty
+  segments needed 380 MB, which is a fatal error no caller can catch. See the part ceiling
+  under Added.
+- **IPTC parsing was quadratic in a repeated dataset**: each keyword read filtered and copied
+  every earlier one again, so 7 MB of JPEG `APP13` segments took twenty seconds to open and a
+  60 KB PNG with one compressed chunk took minutes. They are gathered and added once.
+
 ### Fixed
 
 - A privacy scrub left identifying data in place. XMP face regions (`mwg-rs:Regions` and
@@ -77,7 +119,9 @@ so.
   - `ICCProfile::decodeCurve()` warned on a `curv` gamma with no value after its count.
 - A compressed PNG chunk inflated without limit: a 400 KB file with an `iCCP` chunk inflating
   to 400 MB exhausted the memory limit in `getICCProfile()`. `iCCP`, `zTXt` and compressed
-  `iTXt` now inflate to at most `PNGImage::MaxInflatedSize` (64 MiB) and read as absent past it.
+  `iTXt` now inflate to at most `PNGImage::MaxInflatedSize` (16 MiB) and read as absent past it.
+  The size is what still fits a 128 MiB memory limit: a hex-encoded raw profile peaks at over
+  four times its inflated length while it is decoded and parsed.
 - Appending an item to an `iinf` table too short to hold its own version and entry count wrote
   a malformed table. The count is padded out rather than special cased, so a truncated table
   is rewritten as a valid one.
