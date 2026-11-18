@@ -114,6 +114,40 @@ class PrivacyScrubTest extends PHPUnit\Framework\TestCase
 		}
 	}
 
+	/** An XMP packet naming a face in both region schemas. */
+	private function faceRegionXmp(): XMP
+	{
+		return XMP::parse('<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+			. '<rdf:Description rdf:about="" xmlns:mwg-rs="http://www.metadataworkinggroup.com/schemas/regions/"'
+			. ' xmlns:stArea="http://ns.adobe.com/xmp/sType/Area#" xmlns:MP="http://ns.microsoft.com/photo/1.2/"'
+			. ' xmlns:MPRI="http://ns.microsoft.com/photo/1.2/t/RegionInfo#" xmlns:MPReg="http://ns.microsoft.com/photo/1.2/t/Region#"'
+			. ' xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:FNumber="28/10">'
+			. '<mwg-rs:Regions rdf:parseType="Resource"><mwg-rs:RegionList><rdf:Bag><rdf:li rdf:parseType="Resource">'
+			. '<mwg-rs:Name>FaceSecretName</mwg-rs:Name><mwg-rs:Type>Face</mwg-rs:Type>'
+			. '<mwg-rs:Area stArea:x="0.5" stArea:y="0.5" stArea:w="0.1" stArea:h="0.1"/>'
+			. '</rdf:li></rdf:Bag></mwg-rs:RegionList></mwg-rs:Regions>'
+			. '<MP:RegionInfo rdf:parseType="Resource"><MPRI:Regions><rdf:Bag><rdf:li rdf:parseType="Resource">'
+			. '<MPReg:PersonDisplayName>FaceSecretPerson</MPReg:PersonDisplayName><MPReg:Rectangle>0.1, 0.1, 0.2, 0.2</MPReg:Rectangle>'
+			. '</rdf:li></rdf:Bag></MPRI:Regions></MP:RegionInfo>'
+			. '</rdf:Description></rdf:RDF></x:xmpmeta>');
+	}
+
+	public function testXmpFaceRegionsAreRemovedAsAuthor()
+	{
+		foreach (['Author' => PrivacyCategory::Author, 'Identity' => PrivacyCategory::Identity, 'All' => PrivacyCategory::All] as $name => $types) {
+			$xmp = $this->faceRegionXmp();
+			self::assertStringContainsString('FaceSecretName', $xmp->toPacketText());
+			self::assertSame(2, $xmp->clearPrivateData($types), "$name removes both region sets");
+			$packet = $xmp->toPacketText();
+			self::assertStringNotContainsString('FaceSecretName', $packet, "$name removes the MWG face name");
+			self::assertStringNotContainsString('FaceSecretPerson', $packet, "$name removes the Microsoft person name");
+			self::assertSame('28/10', XMP::parse($packet)->getProperty(XMP::NS_EXIF, 'FNumber'), "$name keeps FNumber");
+		}
+		$xmp = $this->faceRegionXmp();
+		$xmp->clearPrivateData(PrivacyCategory::Location | PrivacyCategory::Description);
+		self::assertStringContainsString('FaceSecretName', $xmp->toPacketText(), 'only Author reaches the regions');
+	}
+
 	public function testXmpAllClearsEverythingIdentifying()
 	{
 		$xmp = $this->loadedXmp();
@@ -363,15 +397,7 @@ class PrivacyScrubTest extends PHPUnit\Framework\TestCase
 		try {
 			$file->setEXIF($this->loadedExif());
 		} catch (\RuntimeException $e) {
-			// No writable EXIF carrier: TIFF edits its live IFD in place; GIF has no EXIF at all.
-			if ($file instanceof TIFFImage) {
-				$exif = $file->getEXIF();
-				$exif->setValueByName('Artist', 'Jane Doe');
-				$exif->setValueByName('Make', 'TestCam');
-				$exif->setValueByName('FNumber', 2.8);
-				$exif->setLatitude(34.05);
-				$exif->setLongitude(-118.24);
-			}
+			// GIF has no EXIF carrier at all.
 		}
 		$file->setXMP($this->loadedContainerXmp());
 		$hasIptc = false;
@@ -582,5 +608,64 @@ class PrivacyScrubTest extends PHPUnit\Framework\TestCase
 		self::assertSame(1, $jpeg->clearPrivateData());
 		self::assertNull($jpeg->getComment());
 		self::assertSame(0, $jpeg->clearPrivateData(), 'and nothing is left');
+	}
+
+	/** A JPEG whose second image, past the first EOI, carries GPS — as an MPF file does. */
+	private function jpegWithTrailingGpsImage(): string
+	{
+		$second = JPEGImage::fromString($this->encoded('imagejpeg'));
+		$second->setEXIF($this->loadedExif());
+		$primary = $this->encoded('imagejpeg');
+		$mpf = "\xFF\xE2" . pack('n', 2 + 8) . JPEGImage::MPF_IDENTIFIER . "MM\x00\x2A";
+		return substr($primary, 0, 2) . $mpf . substr($primary, 2) . $second->toBinary();
+	}
+
+	public function testJpegScrubDropsTheImagesAfterTheEndOfImage()
+	{
+		foreach ([PrivacyCategory::All, PrivacyCategory::Location, PrivacyCategory::Thumbnail] as $types) {
+			$jpeg = JPEGImage::fromString($this->jpegWithTrailingGpsImage());
+			$trailing = $jpeg->getTrailingData();
+			self::assertTrue(JPEGImage::isJPEG($trailing));
+			self::assertNotNull(JPEGImage::fromString($trailing)->getEXIF()->getLatitude(), 'the trailing image has GPS');
+			self::assertStringContainsString(JPEGImage::MPF_IDENTIFIER, $jpeg->toBinary());
+
+			self::assertGreaterThan(0, $jpeg->clearPrivateData($types));
+			$round = JPEGImage::fromString($jpeg->toBinary());
+			self::assertSame('', $round->getTrailingData(), "category $types drops the trailing image");
+			self::assertStringNotContainsString(JPEGImage::MPF_IDENTIFIER, $round->toBinary(), 'and the MPF index');
+			self::assertStringEndsWith("\xFF\xD9", $round->toBinary());
+			self::assertSame([6, 4], [$round->getWidth(), $round->getHeight()]);
+			self::assertNotFalse($round->getImage(), 'the primary image still decodes');
+		}
+	}
+
+	public function testGifScrubDropsTheBytesAfterTheTrailer()
+	{
+		$gif = GIFImage::fromString($this->encoded('imagegif') . 'appended secret');
+		self::assertSame('appended secret', $gif->getTrailingData());
+		self::assertSame(1, $gif->clearPrivateData(PrivacyCategory::Location));
+		self::assertSame('', GIFImage::fromString($gif->toBinary())->getTrailingData());
+		self::assertSame(0, $gif->clearPrivateData(), 'and nothing is left');
+		self::assertSame(0, GIFImage::fromString($this->encoded('imagegif') . 'x')->clearPrivateData(0), 'no category, nothing removed');
+	}
+
+	public function testAContainerThatRefusesAWriteBackStillReportsTheScrub()
+	{
+		$png = new class () extends PNGImage {
+			public ?XMP $live = null;
+
+			public function getXMP(): ?XMP
+			{
+				return $this->live;
+			}
+
+			public function setXMP(?XMP $xmp): void
+			{
+				throw new \RuntimeException('probe refuses the write-back');
+			}
+		};
+		$png->live = $this->loadedContainerXmp();
+		self::assertSame(1, $png->clearPrivateData(PrivacyCategory::Author));
+		self::assertNull($png->live->getProperty(XMP::NS_DC, 'creator'), 'the live object was scrubbed');
 	}
 }

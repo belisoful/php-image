@@ -467,8 +467,8 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 					try {
 						call_user_func([$this, $setter], $value);
 					} catch (\RuntimeException $e) {
-						// A read-only carrier (TIFF's EXIF is its live IFD, already scrubbed in
-						// place above) refuses the write-back; the scrub still took effect.
+						// A container that reads a carrier but refuses to write it back (none
+						// built in does) keeps the scrub only where the value was its live object.
 					}
 					$removed += $count;
 				}

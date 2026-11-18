@@ -169,6 +169,16 @@ class GIFImageTest extends PHPUnit\Framework\TestCase
 		self::assertSame($bytes, GIFImage::fromString($bytes)->toBinary());
 	}
 
+	public function testTrailingBytesCanBeRemoved()
+	{
+		$gif = GIFImage::fromString($this->gdGif() . 'JUNKJUNK');
+		self::assertSame('JUNKJUNK', $gif->getTrailingData());
+		self::assertTrue($gif->removeTrailingData());
+		self::assertSame($this->gdGif(), $gif->toBinary());
+		self::assertSame('', $gif->getTrailingData());
+		self::assertFalse($gif->removeTrailingData(), 'nothing left to remove');
+	}
+
 	public function testSubBlockFramingIsPreserved()
 	{
 		// A comment deliberately split at an unusual boundary must be re-emitted

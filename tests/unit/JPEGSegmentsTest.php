@@ -441,4 +441,37 @@ class JPEGSegmentsTest extends PHPUnit\Framework\TestCase
 		$jpeg->setPictureInfo(null);
 		self::assertSame(bin2hex($this->minimalJpeg()), bin2hex($jpeg->toBinary()));
 	}
+
+	public function testTrailingDataIsEverythingPastTheFirstTopLevelEndOfImage()
+	{
+		// Between scans: a fill byte, a restart marker outside entropy data, a stray
+		// non-marker byte, and a table segment; inside the entropy data a stuffed 0xFF00
+		// and a restart marker, neither of which ends the scan.
+		$scan = self::SOS . "ab\xFF\x00cd\xFF\xD0ef" . "\xFF\xFF\xD1" . "\x00" . $this->segment(0xC4, 'tbl')
+			. self::SOS . 'more' . "\xFF\xD9";
+		$appended = "\xFF\xD8\xFF\xD9 secondary";
+		$jpeg = JPEGImage::fromString("\xFF\xD8" . self::SOF . $scan . $appended);
+		self::assertSame($appended, $jpeg->getTrailingData());
+		self::assertTrue($jpeg->removeTrailingData());
+		self::assertSame("\xFF\xD8" . self::SOF . $scan, $jpeg->toBinary());
+		self::assertFalse($jpeg->removeTrailingData(), 'nothing left to remove');
+
+		// A scan that never ends, or whose last segment is cut short, has no trailing data.
+		foreach ([self::SOS . 'no end', self::SOS . "x\xFF\xC4\x00"] as $open) {
+			$cut = JPEGImage::fromString("\xFF\xD8" . self::SOF . $open);
+			self::assertSame('', $cut->getTrailingData());
+			self::assertFalse($cut->removeTrailingData());
+			self::assertSame("\xFF\xD8" . self::SOF . $open, $cut->toBinary());
+		}
+	}
+
+	public function testRemovingTrailingDataDropsTheMpfIndexEvenWithNothingAppended()
+	{
+		$mpf = $this->segment(0xE2, JPEGImage::MPF_IDENTIFIER . 'MM');
+		$other = $this->segment(0xE2, 'OTHER');
+		$jpeg = JPEGImage::fromString($this->minimalJpeg($mpf . $other));
+		self::assertSame('', $jpeg->getTrailingData());
+		self::assertTrue($jpeg->removeTrailingData());
+		self::assertSame($this->minimalJpeg($other), $jpeg->toBinary());
+	}
 }

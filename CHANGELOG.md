@@ -12,6 +12,15 @@ so.
 
 ### Added
 
+- **`TIFFImage::setEXIF()`** merges an EXIF into the TIFF instead of refusing it. A TIFF's IFD0
+  is its EXIF IFD0, so every tag outside `TIFFImage::ImageTags` (the raster and layout tags plus
+  the XMP, IPTC, IRB and ICC carriers) is removed and the given EXIF's other IFD0 tags are copied
+  in, its EXIF, GPS and Interoperability IFDs as deep copies. `null` leaves only the image tags.
+- **Trailing data** on JPEG and GIF: `getTrailingData()` and `removeTrailingData()`. On a JPEG
+  that is everything after the first top-level EOI — MPF secondary images, motion-photo video,
+  any appended file — and removing it also drops the APP2 `MPF` index that addressed it. A
+  lazily read JPEG shortens its deferred scan through the new `SourceRange::withLength()`
+  (php-image only: prado-image shortens the framework stream window it already holds).
 - **TIFF `SampleFormat`** in `TIFFImage::getImage()`: signed integer samples at 8, 16 and 32 bits;
   IEEE floating point at 16 (half), 24, 32 and 64 bits, scaled from `SMinSampleValue`–
   `SMaxSampleValue` or 0.0–1.0; unsigned at 32 bits; and the floating-point predictor.
@@ -37,6 +46,10 @@ so.
 
 ### Fixed
 
+- A privacy scrub left identifying data in place. XMP face regions (`mwg-rs:Regions` and
+  Microsoft's `MP:RegionInfo`, which name the people pictured) are now removed under `Author`;
+  and `clearPrivateData()` on a JPEG or GIF drops the trailing data for any category, since an
+  MPF secondary image carries its own EXIF, GPS included, that no carrier scrub reached.
 - Appending an item to an `iinf` table too short to hold its own version and entry count wrote
   a malformed table. The count is padded out rather than special cased, so a truncated table
   is rewritten as a valid one.
