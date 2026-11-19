@@ -15,8 +15,9 @@ so.
 - **A part ceiling**: `ImageFile::getMaxParts()`, `setMaxParts()`, `assertPartCount()` and
   `allowsPartCount()`. Every parser counts the parts it makes a record of — JPEG segments, PNG
   and RIFF chunks, ISO BMFF boxes at every depth, GIF blocks and data sub-blocks, TIFF directory
-  entries — and a file may hold 65,536 of them plus one more for every 256 bytes of its length,
-  so a large file of ordinary parts is never refused for being large. A container over the
+  entries — and a file may hold as many as the memory budget allows (65,536 with no memory
+  limit) plus one more for every 256 bytes of its length, so a large file of ordinary parts is
+  never refused for being large. A container over the
   ceiling throws `\UnexpectedValueException`; metadata over it (Photoshop resources, IPTC
   datasets) reads as absent. The count is per file: nested boxes pass it down, and a
   `RIFFList` shares its container's (`sharePartCount()`).
@@ -50,18 +51,25 @@ so.
   rewrite updates to what it actually wrote.
 - **A shared ISO BMFF box model** (`BMFFBox`), lifted out of the JUMBF reader: the 32-bit
   size, the 64-bit and run-to-the-end forms, `uuid` user types and depth-capped nesting.
-- **A memory budget**: `ImageFile::setMemoryBudget()` sets the three ceilings from one number —
-  one part for every 2,048 bytes of it, one inflated byte for every 8, one decoded pixel for
-  every 16. The ratios are measured peaks with room to spare: a hex-encoded raw profile peaks
-  at 4.4 times its inflated length, and a TIFF raster decoded to an image at 9 bytes a pixel.
-  128 MiB gives the parts and inflation defaults; the pixel default is larger than that budget
-  allows, a raster being decoded only when it is asked for. It is not a meter — nothing
-  watches memory while a file is read, so a file opens or is refused the same way whatever
-  else the application holds — and it does not cover the length of the file itself.
+- **A memory budget**: the three ceilings are sized from one number — one part for every
+  2,048 bytes of it, one inflated byte for every 8, one decoded pixel for every 16. The ratios
+  are measured peaks with room to spare: a hex-encoded raw profile peaks at 4.4 times its
+  inflated length, and a TIFF raster decoded to an image at 9 bytes a pixel. Unless one is set
+  the budget is half of PHP's `memory_limit`, read each time it is asked for, so a file that
+  would not fit the limit the process really runs under is refused with an exception instead
+  of ending it: under the stock 128M that is 32,768 parts, 8 MiB inflated and about four
+  million pixels. A process with no memory limit has no budget and keeps the fixed defaults
+  (65,536 parts, 16 MiB, 2^28 pixels). `ImageFile::setMemoryBudget()` takes a number of bytes, a
+  size in PHP's own shorthand (`'256M'`, `'1G'`) or a share of the limit (`'25%'`), and
+  `getMemoryBudget()` reads it back. A ceiling moved by its own setter keeps that value
+  whatever budget is set before or after, until the setter is given `null`. It is not a
+  meter — the limit is configuration and nothing watches memory while a file is read, so a
+  file opens or is refused the same way whatever else the application holds — and it does not
+  cover the length of the file itself.
   `PNGImage::getMaxInflatedSize()` and `setMaxInflatedSize()` come with it, so the inflation
   ceiling moves at run time like the other two.
 - **A pixel ceiling** on the pure-PHP raster decoders: `ImageGraphics::getMaxPixels()` and
-  `setMaxPixels()`, 2^28 by default (a 16384 by 16384 raster). `TIFFImage::getImage()` and
+  `setMaxPixels()`, 2^28 with no memory limit (a 16384 by 16384 raster). `TIFFImage::getImage()` and
   `GIFFrame::getPixels()` size their buffers from the dimensions a file states, so a TIFF of
   176 bytes claiming 50000 by 50000 asked for 7.5 GB and died of it, uncatchably. A raster over
   the ceiling now throws before anything is allocated.
