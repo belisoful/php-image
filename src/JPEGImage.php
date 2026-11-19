@@ -949,38 +949,35 @@ class JPEGImage extends ImageFile
 	 * packet, so a packet that outgrew one segment reads back as a single XMP.  Each
 	 * segment carries the 32-character digest of the whole extended packet, its total
 	 * length, and this chunk's offset.
+	 *
+	 * Only the packet the main one names in `xmpNote:HasExtendedXMP` is its extension, and
+	 * only when every byte of it arrived (XMP Part 3, 1.1.3.1).  Any other is what an editor
+	 * that rewrote the main packet left behind, so it is not read, and a rewrite drops it.
+	 * The digest is matched as a name and not recomputed from the text: writers in the wild
+	 * name their packets with digests of something else, and refusing those would lose
+	 * metadata that every other reader accepts.
 	 * @param string[] $payloads The extension payloads (identifier already stripped).
 	 */
 	protected function mergeExtendedXmp(array $payloads): void
 	{
+		$main = $this->getXMP();
+		$wanted = $main?->getProperty(XMP::NS_NOTE, 'HasExtendedXMP');
+		if (!is_string($wanted)) {
+			return;
+		}
 		$parts = [];
+		$total = null;
 		foreach ($payloads as $payload) {
-			if (strlen($payload) < 40) {
+			if (strlen($payload) < 40 || substr($payload, 0, 32) !== $wanted) {
 				continue;
 			}
-			$digest = substr($payload, 0, 32);
-			$offset = unpack('N', substr($payload, 36, 4))[1];
-			$parts[$digest][$offset] = substr($payload, 40);
+			['total' => $total, 'offset' => $offset] = unpack('Ntotal/Noffset', substr($payload, 32, 8));
+			$parts[$offset] = substr($payload, 40);
 		}
-		if ($parts === []) {
-			return;
-		}
-		// Prefer the packet the main XMP points at (xmpNote:HasExtendedXMP).
-		$wanted = null;
-		$main = $this->getXMP();
-		if ($main !== null) {
-			$note = $main->getProperty(XMP::NS_NOTE, 'HasExtendedXMP');
-			$wanted = is_string($note) ? $note : null;
-		}
-		$digest = $wanted !== null && isset($parts[$wanted]) ? $wanted : array_key_first($parts);
-
-		ksort($parts[$digest]);
-		$extended = XMP::parse(implode('', $parts[$digest]));
+		ksort($parts);
+		$text = implode('', $parts);
+		$extended = strlen($text) === $total ? XMP::parse($text) : false;
 		if ($extended === false) {
-			return;
-		}
-		if ($main === null) {
-			$this->setXMP($extended);
 			return;
 		}
 		$main->merge($extended);

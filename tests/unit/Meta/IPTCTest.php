@@ -1125,6 +1125,30 @@ class IPTCTest extends PHPUnit\Framework\TestCase
 		self::assertSame('caption', $iptc[IPTCTags::CaptionAbstract]);
 	}
 
+	public function testASetReadFromBytesIsWrittenBackWithoutAnEnvelope()
+	{
+		// Most files carry no envelope record.  Stamping one on a rewrite added today's date
+		// and a number derived from it to a file nobody had edited.
+		$block = "\x1C\x02\x50\x00\x06Author" . "\x1C\x02\x78\x00\x07caption";
+		$iptc = IPTC::parse($block);
+
+		self::assertSame(bin2hex($block), bin2hex($iptc->toBinary(false)));
+		$iptc[IPTCTags::CaptionAbstract] = 'edited';
+		self::assertStringNotContainsString("\x1C\x01", $iptc->toBinary(false), 'an edit stamps nothing either');
+		self::assertFalse($iptc->contains(IPTCTags::DateSent));
+
+		// Completing the set is still there for whoever asks for it...
+		$iptc->validate();
+		self::assertTrue($iptc->contains(IPTCTags::DateSent));
+		self::assertTrue($iptc->contains(IPTCTags::EnvelopeNumber));
+
+		// ...and a set emptied to be built again is a new one, completed when written.
+		$iptc->clear();
+		$iptc[IPTCTags::CaptionAbstract] = 'fresh';
+		self::assertStringContainsString("\x1C\x01", $iptc->toBinary(false));
+		self::assertTrue($iptc->contains(IPTCTags::DateSent));
+	}
+
 	public function testABlockOfMoreDatasetsThanThePartCeilingAllowsReadsAsAbsent()
 	{
 		$datasets = fn (int $n) => str_repeat("\x1C\x02\x19\x00\x00", $n);

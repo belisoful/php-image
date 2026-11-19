@@ -5,6 +5,7 @@ use Belisoful\Image\BMFF\BMFFBox;
 use Belisoful\Image\BMFFFile;
 use Belisoful\Image\GIFImage;
 use Belisoful\Image\ImageFile;
+use Belisoful\Image\ImageGraphics;
 use Belisoful\Image\JPEGImage;
 use Belisoful\Image\JXLImage;
 use Belisoful\Image\PNGImage;
@@ -25,7 +26,47 @@ class PartCeilingTest extends PHPUnit\Framework\TestCase
 {
 	protected function tearDown(): void
 	{
-		ImageFile::setMaxParts(null);
+		ImageFile::setMemoryBudget(null);
+	}
+
+	public function testAMemoryBudgetSetsTheThreeCeilings()
+	{
+		// 128 MiB is the budget the parts and inflation defaults were sized for.
+		ImageFile::setMemoryBudget(128 * 1024 * 1024);
+		self::assertSame(ImageFile::DefaultMaxParts, ImageFile::getMaxParts());
+		self::assertSame(PNGImage::MaxInflatedSize, PNGImage::getMaxInflatedSize());
+		self::assertSame(8 * 1024 * 1024, ImageGraphics::getMaxPixels());
+
+		ImageFile::setMemoryBudget(32 * 1024 * 1024);
+		self::assertSame(16384, ImageFile::getMaxParts());
+		self::assertSame(4 * 1024 * 1024, PNGImage::getMaxInflatedSize());
+		self::assertSame(2 * 1024 * 1024, ImageGraphics::getMaxPixels());
+
+		// Each ceiling's own setter still moves it alone.
+		ImageFile::setMaxParts(10);
+		self::assertSame(10, ImageFile::getMaxParts());
+		self::assertSame(4 * 1024 * 1024, PNGImage::getMaxInflatedSize());
+
+		ImageFile::setMemoryBudget(null);
+		self::assertSame(ImageFile::DefaultMaxParts, ImageFile::getMaxParts());
+		self::assertSame(PNGImage::MaxInflatedSize, PNGImage::getMaxInflatedSize());
+		self::assertSame(ImageGraphics::DefaultMaxPixels, ImageGraphics::getMaxPixels());
+	}
+
+	public function testABudgetIsWhatRefusesAFileThatWouldNotFitIt()
+	{
+		// Three hundred empty chunks are nothing to the default ceiling and too many for a
+		// budget of a few hundred kilobytes, which allows two hundred.
+		$png = $this->png(str_repeat($this->pngChunk('tEXt'), 300));
+		self::assertInstanceOf(PNGImage::class, PNGImage::fromString($png));
+
+		ImageFile::setMemoryBudget(200 * ImageFile::BudgetBytesPerPart);
+		try {
+			PNGImage::fromString($png);
+			self::fail('a file over its budget was opened');
+		} catch (\UnexpectedValueException $e) {
+			self::assertStringContainsString('parts', $e->getMessage());
+		}
 	}
 
 	private function chunk(string $id, string $payload = ''): string

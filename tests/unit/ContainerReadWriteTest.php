@@ -555,6 +555,24 @@ class ContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		self::assertNull($capped->getXmpText());
 
 		self::assertSame(16 * 1024 * 1024, PNGImage::MaxInflatedSize);
+		self::assertSame(1024, TSmallInflatePNG::getMaxInflatedSize());
+
+		// The ceiling also moves at run time, for every PNG class; none at all refuses each
+		// compressed chunk rather than asking zlib for no limit.
+		try {
+			foreach ([1024, 0] as $ceiling) {
+				PNGImage::setMaxInflatedSize($ceiling);
+				self::assertSame($ceiling, PNGImage::getMaxInflatedSize());
+				$capped = PNGImage::fromString($bytes);
+				self::assertNull($capped->getICCProfile());
+				self::assertNull($capped->getIPTC());
+				self::assertNull($capped->getXmpText());
+			}
+		} finally {
+			PNGImage::setMaxInflatedSize(null);
+		}
+		self::assertSame(PNGImage::MaxInflatedSize, PNGImage::getMaxInflatedSize());
+		self::assertSame($profile, PNGImage::fromString($bytes)->getICCProfile());
 	}
 
 	public function testPngWithoutZlibReadsCompressedChunksAsAbsentAndRefusesToWriteThem()

@@ -62,6 +62,13 @@ class IPTC implements \IteratorAggregate, \ArrayAccess, \Countable, PrivacyScrub
 	 */
 	protected array $_d = [];
 
+	/**
+	 * @var bool Whether the datasets were {@see read() read from bytes}.  Such a set is
+	 *   written back with the datasets it holds; only a set built from nothing is completed
+	 *   by {@see validate()} when it is written.
+	 */
+	private bool $_asRead = false;
+
 	public const TAGID_REGEX = '/^(240|[123789])#((?:0?|1)(?:0?|[1-9])\d|2(?:[0-4]\d|5[0-5]))$/';
 	public const DATEVALUE_REGEX = '/^\d{4}(?:0[\d]|1[012])(?:[012]\d|3[01])$/i'; // "CCYYMMDD"
 	/**
@@ -553,6 +560,7 @@ class IPTC implements \IteratorAggregate, \ArrayAccess, \Countable, PrivacyScrub
 		foreach ($repeated as $tag => $values) {
 			$this[$tag] = $values;
 		}
+		$this->_asRead = true;
 		return true;
 	}
 
@@ -598,6 +606,12 @@ class IPTC implements \IteratorAggregate, \ArrayAccess, \Countable, PrivacyScrub
 
 	/**
 	 * Ensures mandatory envelope tags are present and removes unneeded version tags.
+	 *
+	 * {@see toBinary()} does this for a set built from nothing, which is being sent for the
+	 * first time.  It does not for a set {@see read() read from bytes}: files in the wild
+	 * rarely carry the envelope, and stamping one would add today's date and a number
+	 * derived from it to a file that was only being rewritten.  Call this to complete such
+	 * a set on purpose.
 	 */
 	public function validate(): void
 	{
@@ -629,7 +643,8 @@ class IPTC implements \IteratorAggregate, \ArrayAccess, \Countable, PrivacyScrub
 	}
 
 	/**
-	 * Serializes the datasets to an IPTC binary block.
+	 * Serializes the datasets to an IPTC binary block.  A set built from nothing is
+	 * {@see validate() completed} first; a set read from bytes is written as it stands.
 	 * @param null|bool|string $charset The fallback charset, or a bool standing in for $photoshopEncode.
 	 * @param bool $photoshopEncode Whether to wrap the result in a Photoshop 8BIM block (true for JPEG).
 	 * @return string The IPTC binary block.
@@ -641,7 +656,9 @@ class IPTC implements \IteratorAggregate, \ArrayAccess, \Countable, PrivacyScrub
 			$charset = null;
 		}
 		$charset ??= self::defaultCharset();
-		$this->validate();
+		if (!$this->_asRead) {
+			$this->validate();
+		}
 
 		$result = '';
 		foreach ($this->toArray() as $id => $values) {
@@ -742,13 +759,15 @@ class IPTC implements \IteratorAggregate, \ArrayAccess, \Countable, PrivacyScrub
 	}
 
 	/**
-	 * Removes every dataset.
+	 * Removes every dataset.  The emptied set is a new one: what is built in it next is
+	 * {@see validate() completed} when it is written.
 	 */
 	public function clear(): void
 	{
 		foreach (array_keys($this->_d) as $key) {
 			$this->remove($key);
 		}
+		$this->_asRead = false;
 	}
 
 	/**
@@ -1098,12 +1117,13 @@ class IPTC implements \IteratorAggregate, \ArrayAccess, \Countable, PrivacyScrub
 			}
 		}
 		// IIM mandates DateSent, ServiceIdentifier, and EnvelopeNumber in the envelope, and
-		// validate() refills any that are missing on the next write with today's date, a
-		// default service id, and an envelope number derived from them.  A scrub must not
-		// leave a real timestamp or an identifier derived from one behind, so an existing
-		// envelope date is replaced by a fixed, obviously synthetic sentinel and an existing
-		// envelope number is re-derived from it -- replaced, never minted: a record set that
-		// has no envelope yet is left for the writer to stamp as freshly sent, which it is.
+		// validate() refills any that are missing with today's date, a default service id,
+		// and an envelope number derived from them.  A scrub must not leave a real timestamp
+		// or an identifier derived from one behind, so an existing envelope date is replaced
+		// by a fixed, obviously synthetic sentinel and an existing envelope number is
+		// re-derived from it -- replaced, never minted: a set built from nothing is left for
+		// the writer to stamp as freshly sent, which it is, and a set read from bytes with no
+		// envelope is written back without one.
 		if (($types & PrivacyCategory::Timestamp) && $this->contains(IPTCTags::DateSent) && $this[IPTCTags::DateSent] !== self::ScrubbedDate) {
 			$this[IPTCTags::DateSent] = self::ScrubbedDate;
 			$removed++;

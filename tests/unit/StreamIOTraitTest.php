@@ -196,6 +196,153 @@ class StreamIOTraitTest extends PHPUnit\Framework\TestCase
 		self::expectException(\InvalidArgumentException::class);
 		TIFFDocument::fromStream(12345);
 	}
+
+	// ---- save(): the file is replaced whole or left as it was ----
+
+	/**
+	 * Runs a test against a file in a directory of its own, removed afterwards.
+	 * @param callable(string, string): void $test Given the file's path and its directory.
+	 */
+	private function withSavedFile(callable $test): void
+	{
+		$dir = sys_get_temp_dir() . '/save-' . bin2hex(random_bytes(6));
+		mkdir($dir);
+		$path = $dir . '/picture.jpg';
+		file_put_contents($path, $this->jpegBytes());
+		try {
+			$test($path, $dir);
+		} finally {
+			foreach (array_diff((array) scandir($dir), ['.', '..']) as $name) {
+				@unlink($dir . '/' . $name);
+			}
+			@rmdir($dir);
+		}
+	}
+
+	private function editedJpeg(string $path): JPEGImage
+	{
+		$jpeg = JPEGImage::fromFile($path);
+		$jpeg->setEXIF($this->sampleExif());
+		return $jpeg;
+	}
+
+	public function testSaveReplacesTheFileAndKeepsItsPermissions()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			chmod($path, 0o600);
+			$before = fileinode($path);
+			$jpeg = $this->editedJpeg($path);
+
+			self::assertSame(strlen($jpeg->toBinary()), $jpeg->save($path));
+			clearstatcache();
+			// A new file took the old one's name, with its permissions, and nothing else
+			// is left beside it.
+			self::assertNotSame($before, fileinode($path));
+			self::assertSame(0o600, fileperms($path) & 0o777);
+			self::assertSame(bin2hex($jpeg->toBinary()), bin2hex((string) file_get_contents($path)));
+			self::assertSame(['picture.jpg'], array_values(array_diff((array) scandir($dir), ['.', '..'])));
+		});
+	}
+
+	public function testAWriteThatStopsShortLeavesTheOriginalAsItWas()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			$original = (string) file_get_contents($path);
+			$jpeg = TFullDiskJpeg::fromString($original);
+			$jpeg->setEXIF($this->sampleExif());
+			try {
+				$jpeg->save($path);
+				self::fail('a short write was reported as a save');
+			} catch (\RuntimeException $e) {
+				self::assertStringContainsString('cannot be written', $e->getMessage());
+			}
+			self::assertSame(bin2hex($original), bin2hex((string) file_get_contents($path)));
+			self::assertSame(['picture.jpg'], array_values(array_diff((array) scandir($dir), ['.', '..'])));
+		});
+	}
+
+	public function testSaveFollowsALinkToTheFileItNames()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			$link = $dir . '/link.jpg';
+			symlink($path, $link);
+			$jpeg = $this->editedJpeg($path);
+			$jpeg->save($link);
+			clearstatcache();
+			self::assertTrue(is_link($link));
+			self::assertSame(bin2hex($jpeg->toBinary()), bin2hex((string) file_get_contents($path)));
+		});
+	}
+
+	public function testSaveThroughALinkToNothingWritesTheFileItNames()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			$link = $dir . '/link.jpg';
+			symlink($dir . '/absent.jpg', $link);
+			$jpeg = $this->editedJpeg($path);
+			$jpeg->save($link);
+			clearstatcache();
+			self::assertTrue(is_link($link));
+			self::assertSame(bin2hex($jpeg->toBinary()), bin2hex((string) file_get_contents($dir . '/absent.jpg')));
+		});
+	}
+
+	public function testSaveWritesInPlaceWhenTheRenameIsRefused()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			$before = fileinode($path);
+			$jpeg = TNoRenameJpeg::fromString((string) file_get_contents($path));
+			$jpeg->setEXIF($this->sampleExif());
+
+			self::assertSame(strlen($jpeg->toBinary()), $jpeg->save($path));
+			clearstatcache();
+			self::assertSame($before, fileinode($path));   // the same file, rewritten
+			self::assertSame(bin2hex($jpeg->toBinary()), bin2hex((string) file_get_contents($path)));
+			self::assertSame(['picture.jpg'], array_values(array_diff((array) scandir($dir), ['.', '..'])));
+		});
+	}
+
+	public function testSaveOverSomethingThatIsNotAFileIsNotARename()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			$jpeg = $this->editedJpeg($path);
+			// A directory is never renamed over: the plain write is tried and refuses it.
+			try {
+				$jpeg->save($dir);
+				self::fail('a directory was written over');
+			} catch (\RuntimeException $e) {
+				self::assertTrue(is_dir($dir));
+				self::assertSame(['picture.jpg'], array_values(array_diff((array) scandir($dir), ['.', '..'])));
+			}
+			// A stream wrapper has no rename to rely on and is written directly.
+			self::assertSame(strlen($jpeg->toBinary()), $jpeg->save('php://memory'));
+		});
+	}
+}
+
+/**
+ * A JPEG on a disk that fills half-way through a write.
+ */
+class TFullDiskJpeg extends JPEGImage
+{
+	protected function writeHandle($handle, string $bytes): false|int
+	{
+		return fwrite($handle, substr($bytes, 0, intdiv(strlen($bytes), 2)));
+	}
+}
+
+/**
+ * A JPEG whose temporary file is gone by the time it is to be renamed, as when the
+ * directory refuses the rename.
+ */
+class TNoRenameJpeg extends JPEGImage
+{
+	protected function writeHandle($handle, string $bytes): false|int
+	{
+		$written = fwrite($handle, $bytes);
+		unlink(stream_get_meta_data($handle)['uri']);
+		return $written;
+	}
 }
 
 /**

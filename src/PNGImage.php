@@ -73,9 +73,13 @@ class PNGImage extends ImageFile
 	 *   The size is set by what reading costs, not by what is stored: a hex-encoded raw
 	 *   profile peaks at over four times its inflated length while it is decoded and
 	 *   parsed, so this is the most that still fits a 128 MiB memory limit.
-	 *   The accessors resolve it late (`static::`), so a subclass may raise or lower it.
+	 *   This is the default; {@see setMaxInflatedSize()} moves the ceiling at run time, and
+	 *   it is resolved late (`static::`), so a subclass may raise or lower it too.
 	 */
 	public const MaxInflatedSize = 0x1000000;
+
+	/** @var ?int The inflation ceiling set at run time, or null for {@see MaxInflatedSize}. */
+	private static ?int $_maxInflatedSize = null;
 
 	/**
 	 * @var string[] The chunk order the PNG specification requires: the header, the
@@ -464,14 +468,37 @@ class PNGImage extends ImageFile
 	}
 
 	/**
-	 * Inflates the zlib stream of a compressed chunk, to at most {@see MaxInflatedSize}.
+	 * Returns the inflation ceiling: the most bytes a compressed chunk may inflate to.
+	 * @return int The ceiling, in bytes.
+	 */
+	public static function getMaxInflatedSize(): int
+	{
+		return self::$_maxInflatedSize ?? static::MaxInflatedSize;
+	}
+
+	/**
+	 * Sets the inflation ceiling.  Raise it, with the memory limit, to read a compressed
+	 * chunk that really is that large.
+	 * @param ?int $bytes The ceiling in bytes, or null to restore {@see MaxInflatedSize}.
+	 *   Zero or less reads every compressed chunk as undecodable.
+	 */
+	public static function setMaxInflatedSize(?int $bytes): void
+	{
+		self::$_maxInflatedSize = $bytes;
+	}
+
+	/**
+	 * Inflates the zlib stream of a compressed chunk, to at most the
+	 * {@see getMaxInflatedSize() inflation ceiling}.
 	 * @param string $data The zlib stream.
 	 * @return false|string The inflated bytes, or false when they cannot be had: a corrupt
 	 *   stream, one that inflates past the ceiling, or no ext-zlib to inflate with.
 	 */
 	protected function inflate(string $data): false|string
 	{
-		return $this->hasZlib() ? @gzuncompress($data, static::MaxInflatedSize) : false;
+		// A length of zero would ask zlib for no ceiling at all.
+		$ceiling = static::getMaxInflatedSize();
+		return $ceiling > 0 && $this->hasZlib() ? @gzuncompress($data, $ceiling) : false;
 	}
 
 	/**

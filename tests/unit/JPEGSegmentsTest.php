@@ -111,26 +111,42 @@ class JPEGSegmentsTest extends PHPUnit\Framework\TestCase
 
 	public function testExtendedXmpFragmentTooShortIsIgnored()
 	{
-		// An extension segment shorter than the digest/length/offset header carries nothing.
+		// An extension segment shorter than the digest/length/offset header carries nothing,
+		// whether or not a main packet is waiting for an extension.
 		$payload = JPEGImage::XMP_EXTENSION_IDENTIFIER . 'tooshort';
 		$jpeg = JPEGImage::fromString($this->minimalJpeg($this->segment(JPEGImage::APP1, $payload)));
 		self::assertNull($jpeg->getXmpText());
 		self::assertNull($jpeg->getXMP());
 		self::assertSame(bin2hex($this->minimalJpeg()), bin2hex($jpeg->toBinary()));
+
+		$main = $this->mainNaming(str_repeat('A', 32));
+		$jpeg = JPEGImage::fromString($this->minimalJpeg($main . $this->segment(JPEGImage::APP1, $payload)));
+		self::assertSame(str_repeat('A', 32), $jpeg->getXMP()?->getProperty(XMP::NS_NOTE, 'HasExtendedXMP'));
+		self::assertSame(bin2hex($this->minimalJpeg($main)), bin2hex($jpeg->toBinary()));
 	}
 
 	public function testExtendedXmpUnparsablePacketIsIgnored()
 	{
-		// A well-formed extension header whose reassembled body is not an XMP packet.
+		// A well-formed extension header, named by the main packet and complete, whose
+		// reassembled body is not an XMP packet.
 		$body = 'not xml at all';
 		$payload = JPEGImage::XMP_EXTENSION_IDENTIFIER . str_repeat('A', 32)
 			. pack('N', strlen($body)) . pack('N', 0) . $body;
-		$jpeg = JPEGImage::fromString($this->minimalJpeg($this->segment(JPEGImage::APP1, $payload)));
-		self::assertNull($jpeg->getXmpText());
-		self::assertSame(bin2hex($this->minimalJpeg()), bin2hex($jpeg->toBinary()));
+		$main = $this->mainNaming(str_repeat('A', 32));
+		$jpeg = JPEGImage::fromString($this->minimalJpeg($main . $this->segment(JPEGImage::APP1, $payload)));
+		self::assertSame(str_repeat('A', 32), $jpeg->getXMP()?->getProperty(XMP::NS_NOTE, 'HasExtendedXMP'));
+		self::assertSame(bin2hex($this->minimalJpeg($main)), bin2hex($jpeg->toBinary()));
 	}
 
-	public function testExtendedXmpBecomesTheMainPacketWhenThereIsNone()
+	/** The APP1 segment of a main XMP packet that names an extended packet by its digest. */
+	private function mainNaming(string $digest): string
+	{
+		$main = XMP::blank();
+		$main->setProperty(XMP::NS_NOTE, 'HasExtendedXMP', $digest);
+		return $this->segment(JPEGImage::APP1, JPEGImage::XMP_IDENTIFIER . $main->toPacketText(false));
+	}
+
+	public function testExtendedXmpFragmentsAreJoinedInOffsetOrder()
 	{
 		$xmp = XMP::blank();
 		$xmp->setProperty(XMP::NS_DC, 'title', 'Extended Title');
@@ -139,10 +155,14 @@ class JPEGSegmentsTest extends PHPUnit\Framework\TestCase
 		$digest = strtoupper(md5($text));
 		$chunk = fn (int $offset, string $part): string => JPEGImage::XMP_EXTENSION_IDENTIFIER
 			. $digest . pack('N', strlen($text)) . pack('N', $offset) . $part;
+		$main = XMP::blank();
+		$main->setProperty(XMP::NS_NOTE, 'HasExtendedXMP', $digest);
+		$mainSegment = $this->segment(JPEGImage::APP1, JPEGImage::XMP_IDENTIFIER . $main->toPacketText(false));
 
-		// The fragments arrive out of order and there is no main APP1 XMP segment.
+		// The fragments arrive out of order.
 		$jpeg = JPEGImage::fromString($this->minimalJpeg(
-			$this->segment(JPEGImage::APP1, $chunk($half, substr($text, $half)))
+			$mainSegment
+			. $this->segment(JPEGImage::APP1, $chunk($half, substr($text, $half)))
 			. $this->segment(JPEGImage::APP1, $chunk(0, substr($text, 0, $half))),
 		));
 		self::assertSame(['Extended Title'], $jpeg->getXMP()?->getProperty(XMP::NS_DC, 'title'));
@@ -152,6 +172,27 @@ class JPEGSegmentsTest extends PHPUnit\Framework\TestCase
 		self::assertStringContainsString(JPEGImage::XMP_IDENTIFIER, $out);
 		self::assertStringNotContainsString(JPEGImage::XMP_EXTENSION_IDENTIFIER, $out);
 		self::assertSame(['Extended Title'], JPEGImage::fromString($out)->getXMP()?->getProperty(XMP::NS_DC, 'title'));
+
+		// A packet with a fragment missing is not the packet its segments describe.
+		$partial = JPEGImage::fromString($this->minimalJpeg(
+			$mainSegment . $this->segment(JPEGImage::APP1, $chunk(0, substr($text, 0, $half))),
+		));
+		self::assertNull($partial->getXMP()?->getProperty(XMP::NS_DC, 'title'));
+		self::assertSame($digest, $partial->getXMP()?->getProperty(XMP::NS_NOTE, 'HasExtendedXMP'));
+	}
+
+	public function testExtendedXmpWithNoMainPacketToNameItIsNotRead()
+	{
+		$xmp = XMP::blank();
+		$xmp->setProperty(XMP::NS_DC, 'title', 'Left Behind');
+		$text = $xmp->toPacketText(false);
+		$chunk = JPEGImage::XMP_EXTENSION_IDENTIFIER . strtoupper(md5($text))
+			. pack('N', strlen($text)) . pack('N', 0) . $text;
+
+		$jpeg = JPEGImage::fromString($this->minimalJpeg($this->segment(JPEGImage::APP1, $chunk)));
+		self::assertNull($jpeg->getXMP());
+		// A rewrite drops what no packet names.
+		self::assertStringNotContainsString('Left Behind', $jpeg->toBinary());
 	}
 
 	public function testJumbfFragmentTooShortIsIgnored()
@@ -288,24 +329,31 @@ class JPEGSegmentsTest extends PHPUnit\Framework\TestCase
 		self::assertSame(['Readable'], $jpeg->getXMP()?->getProperty(XMP::NS_DC, 'title'));
 	}
 
-	public function testExtendedXmpMergedWhenTheMainPacketNamesNoDigest()
+	public function testExtendedXmpTheMainPacketDoesNotNameIsNotRead()
 	{
-		// The main packet carries no xmpNote:HasExtendedXMP, so the only reassembled
-		// packet is taken as the extension rather than being dropped for want of a name.
-		$main = XMP::blank();
-		$main->setProperty(XMP::NS_DC, 'title', 'Main Title');
+		// An editor that rewrites the main packet and leaves the old extension segments in
+		// place produces exactly this: a packet no longer named, or named by a digest that
+		// is not the one present.  Neither is merged into what is read.
 		$extended = XMP::blank();
 		$extended->setProperty(XMP::NS_DC, 'description', 'From The Extension');
 		$text = $extended->toPacketText(false);
-		$chunk = JPEGImage::XMP_EXTENSION_IDENTIFIER . strtoupper(md5($text))
-			. pack('N', strlen($text)) . pack('N', 0) . $text;
+		$chunk = $this->segment(JPEGImage::APP1, JPEGImage::XMP_EXTENSION_IDENTIFIER . strtoupper(md5($text))
+			. pack('N', strlen($text)) . pack('N', 0) . $text);
 
-		$jpeg = JPEGImage::fromString($this->minimalJpeg(
-			$this->segment(JPEGImage::APP1, JPEGImage::XMP_IDENTIFIER . $main->toPacketText(false))
-			. $this->segment(JPEGImage::APP1, $chunk),
-		));
-		self::assertSame(['Main Title'], $jpeg->getXMP()?->getProperty(XMP::NS_DC, 'title'));
-		self::assertSame(['From The Extension'], $jpeg->getXMP()?->getProperty(XMP::NS_DC, 'description'));
+		$unnamed = XMP::blank();
+		$unnamed->setProperty(XMP::NS_DC, 'title', 'Main Title');
+		$other = XMP::blank();
+		$other->setProperty(XMP::NS_DC, 'title', 'Main Title');
+		$other->setProperty(XMP::NS_NOTE, 'HasExtendedXMP', str_repeat('A', 32));
+
+		foreach ([$unnamed, $other] as $main) {
+			$jpeg = JPEGImage::fromString($this->minimalJpeg(
+				$this->segment(JPEGImage::APP1, JPEGImage::XMP_IDENTIFIER . $main->toPacketText(false)) . $chunk,
+			));
+			self::assertSame(['Main Title'], $jpeg->getXMP()?->getProperty(XMP::NS_DC, 'title'));
+			self::assertNull($jpeg->getXMP()?->getProperty(XMP::NS_DC, 'description'));
+			self::assertStringNotContainsString('From The Extension', $jpeg->toBinary());
+		}
 	}
 
 	public function testExtendedXmpPrefersThePacketTheMainOneNames()

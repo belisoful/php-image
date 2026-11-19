@@ -65,6 +65,24 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	/** @var int The bytes of file length that allow one part beyond the ceiling. */
 	public const BytesPerExtraPart = 256;
 
+	/**
+	 * @var int The bytes of a {@see setMemoryBudget() memory budget} that allow one part.
+	 *   A part measures a few hundred bytes; the rest is room for the file itself.
+	 */
+	public const BudgetBytesPerPart = 2048;
+
+	/**
+	 * @var int The bytes of a memory budget that allow one inflated byte.  Reading a
+	 *   hex-encoded raw profile was measured to peak at 4.4 times its inflated length.
+	 */
+	public const BudgetBytesPerInflatedByte = 8;
+
+	/**
+	 * @var int The bytes of a memory budget that allow one decoded pixel.  Decoding a TIFF
+	 *   raster to an image was measured to peak at 9 bytes a pixel and a GIF frame at 4.
+	 */
+	public const BudgetBytesPerPixel = 16;
+
 	/** @var int The most structural parts a file may hold whatever its length. */
 	private static int $_maxParts = self::DefaultMaxParts;
 
@@ -110,6 +128,43 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	public static function setMaxParts(?int $parts): void
 	{
 		self::$_maxParts = $parts ?? self::DefaultMaxParts;
+	}
+
+	/**
+	 * Sets the three ceilings on untrusted input from one number: the memory the
+	 * application means to leave the library.  PHP cannot catch running out of memory, so
+	 * the library refuses, with an exception, what would not fit -- and the budget is what
+	 * says how much that is:
+	 *
+	 * - the {@see getMaxParts() part ceiling} is one part for every
+	 *   {@see BudgetBytesPerPart} bytes,
+	 * - the {@see PNGImage::getMaxInflatedSize() inflation ceiling} one byte for every
+	 *   {@see BudgetBytesPerInflatedByte}, and
+	 * - the {@see ImageGraphics::getMaxPixels() pixel ceiling} one pixel for every
+	 *   {@see BudgetBytesPerPixel}.
+	 *
+	 * A budget of 128 MiB gives the parts and inflation defaults; the pixel default is
+	 * larger than that budget allows, because a raster is only decoded when it is asked
+	 * for.  The ratios are measured peaks with room to spare, not a meter: nothing watches
+	 * memory while a file is read, so the same file opens or is refused the same way
+	 * whatever else the application holds.  Each ceiling's own setter still moves it alone
+	 * afterwards.
+	 *
+	 * What no ceiling covers is the length of the file itself.  Reading one whole holds it
+	 * and the rebuilt copy in memory, and only the caller decides what to pass in.
+	 * @param ?int $bytes The budget in bytes, or null to restore all three defaults.
+	 */
+	public static function setMemoryBudget(?int $bytes): void
+	{
+		if ($bytes === null) {
+			self::setMaxParts(null);
+			PNGImage::setMaxInflatedSize(null);
+			ImageGraphics::setMaxPixels(null);
+			return;
+		}
+		self::setMaxParts(intdiv($bytes, self::BudgetBytesPerPart));
+		PNGImage::setMaxInflatedSize(intdiv($bytes, self::BudgetBytesPerInflatedByte));
+		ImageGraphics::setMaxPixels(intdiv($bytes, self::BudgetBytesPerPixel));
 	}
 
 	/**
@@ -341,18 +396,16 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	abstract public function streamTo(mixed $target): int;
 
 	/**
-	 * Writes the rebuilt image to a file.
+	 * Writes the rebuilt image to a file.  An existing file is replaced whole or left as
+	 * it was -- see {@see writeFile()} -- so saving over the file that was read cannot
+	 * leave half of one behind.
 	 * @param string $path The destination file path.
 	 * @throws \RuntimeException When the file cannot be written.
 	 * @return int The number of bytes written.
 	 */
 	public function save(string $path): int
 	{
-		$written = @file_put_contents($path, $this->compose());
-		if ($written === false) {
-			throw new \RuntimeException(sprintf('Image file \'%s\' cannot be written.', $path));
-		}
-		return $written;
+		return $this->writeFile($path, $this->compose());
 	}
 
 	/**

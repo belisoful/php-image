@@ -42,7 +42,9 @@ class ImageGraphics
 {
 	/**
 	 * @var int The default {@see getMaxPixels() pixel ceiling}: 2^28, a 16384 by 16384
-	 *   raster, which is 768 MiB once decoded to RGB.
+	 *   raster, which is 768 MiB once decoded to RGB and was measured at three times that
+	 *   while it is turned into an image.  It bounds what a file may claim, not what fits
+	 *   the memory limit: {@see ImageFile::setMemoryBudget()} sizes it to one.
 	 */
 	public const DefaultMaxPixels = 0x10000000;
 
