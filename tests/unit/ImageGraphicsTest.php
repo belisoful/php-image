@@ -1,6 +1,7 @@
 <?php
 
 use Belisoful\Image\ImageGraphicsLibraryInterface;
+use Belisoful\Image\ImageFile;
 use Belisoful\Image\ImageGraphics;
 use Belisoful\Image\ImageGraphicsGD;
 use Belisoful\Image\ImageGraphicsImagick;
@@ -21,14 +22,20 @@ class ImageGraphicsTest extends PHPUnit\Framework\TestCase
 	public function testPixelCeiling()
 	{
 		// The ceiling bounds what a raster may declare before a decoder sizes a buffer from it.
+		// The default is the one of a process with no memory limit to size a ceiling from.
 		self::assertSame(1 << 28, ImageGraphics::DefaultMaxPixels);
-		self::assertSame(ImageGraphics::DefaultMaxPixels, ImageGraphics::getMaxPixels());
-		ImageGraphics::assertPixelCount(16384, 16384);   // exactly at the ceiling
+		$limit = ini_set('memory_limit', '-1');
 		try {
-			ImageGraphics::assertPixelCount(16385, 16384);
-			self::fail('a raster over the ceiling must be refused');
-		} catch (\UnexpectedValueException $e) {
-			self::assertStringContainsString('exceeds the ceiling', $e->getMessage());
+			self::assertSame(ImageGraphics::DefaultMaxPixels, ImageGraphics::getMaxPixels());
+			ImageGraphics::assertPixelCount(16384, 16384);   // exactly at the ceiling
+			try {
+				ImageGraphics::assertPixelCount(16385, 16384);
+				self::fail('a raster over the ceiling must be refused');
+			} catch (\UnexpectedValueException $e) {
+				self::assertStringContainsString('exceeds the ceiling', $e->getMessage());
+			}
+		} finally {
+			ini_set('memory_limit', $limit);
 		}
 		// A product past the integer range is still simply too many.
 		$this->expectPixelRefusal(PHP_INT_MAX, PHP_INT_MAX);
@@ -38,8 +45,9 @@ class ImageGraphicsTest extends PHPUnit\Framework\TestCase
 		ImageGraphics::assertPixelCount(6, 4);
 		$this->expectPixelRefusal(5, 5);
 
+		// Set back, the ceiling is the memory budget's again.
 		ImageGraphics::setMaxPixels(null);
-		self::assertSame(ImageGraphics::DefaultMaxPixels, ImageGraphics::getMaxPixels());
+		self::assertSame(ImageFile::getBudgetCeiling(ImageFile::BudgetBytesPerPixel) ?? ImageGraphics::DefaultMaxPixels, ImageGraphics::getMaxPixels());
 	}
 
 	private function expectPixelRefusal(int $width, int $height): void

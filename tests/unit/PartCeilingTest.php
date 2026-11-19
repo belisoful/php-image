@@ -24,15 +24,30 @@ use Belisoful\Image\WebPImage;
  */
 class PartCeilingTest extends PHPUnit\Framework\TestCase
 {
+	/** @var string The memory limit the suite runs under, which the tests here move. */
+	private string $_memoryLimit;
+
+	protected function setUp(): void
+	{
+		// The ceilings follow the memory limit, so each test starts from none: the fixed
+		// defaults, whatever limit the suite itself was started with.
+		$this->_memoryLimit = (string) ini_set('memory_limit', '-1');
+	}
+
 	protected function tearDown(): void
 	{
 		ImageFile::setMemoryBudget(null);
+		ImageFile::setMaxParts(null);
+		PNGImage::setMaxInflatedSize(null);
+		ImageGraphics::setMaxPixels(null);
+		ini_set('memory_limit', $this->_memoryLimit);
 	}
 
 	public function testAMemoryBudgetSetsTheThreeCeilings()
 	{
 		// 128 MiB is the budget the parts and inflation defaults were sized for.
 		ImageFile::setMemoryBudget(128 * 1024 * 1024);
+		self::assertSame(128 * 1024 * 1024, ImageFile::getMemoryBudget());
 		self::assertSame(ImageFile::DefaultMaxParts, ImageFile::getMaxParts());
 		self::assertSame(PNGImage::MaxInflatedSize, PNGImage::getMaxInflatedSize());
 		self::assertSame(8 * 1024 * 1024, ImageGraphics::getMaxPixels());
@@ -42,15 +57,123 @@ class PartCeilingTest extends PHPUnit\Framework\TestCase
 		self::assertSame(4 * 1024 * 1024, PNGImage::getMaxInflatedSize());
 		self::assertSame(2 * 1024 * 1024, ImageGraphics::getMaxPixels());
 
-		// Each ceiling's own setter still moves it alone.
+		// Each ceiling's own setter moves it alone, and set back it is the budget's.
 		ImageFile::setMaxParts(10);
+		PNGImage::setMaxInflatedSize(20);
+		ImageGraphics::setMaxPixels(30);
 		self::assertSame(10, ImageFile::getMaxParts());
-		self::assertSame(4 * 1024 * 1024, PNGImage::getMaxInflatedSize());
+		self::assertSame(20, PNGImage::getMaxInflatedSize());
+		self::assertSame(30, ImageGraphics::getMaxPixels());
+		ImageFile::setMaxParts(null);
+		self::assertSame(16384, ImageFile::getMaxParts());
+		self::assertSame(20, PNGImage::getMaxInflatedSize());
 
+		// A ceiling set on its own outlasts a new budget, which moves only the others...
+		ImageFile::setMemoryBudget(64 * 1024 * 1024);
+		self::assertSame(32768, ImageFile::getMaxParts());
+		self::assertSame(20, PNGImage::getMaxInflatedSize());
+		self::assertSame(30, ImageGraphics::getMaxPixels());
+
+		// ...until its own setter hands it back.
+		PNGImage::setMaxInflatedSize(null);
+		ImageGraphics::setMaxPixels(null);
+		self::assertSame(8 * 1024 * 1024, PNGImage::getMaxInflatedSize());
+		self::assertSame(4 * 1024 * 1024, ImageGraphics::getMaxPixels());
+
+		// With no budget and no memory limit, the fixed defaults -- and still a ceiling's own
+		// value where it has one.
+		ImageFile::setMaxParts(10);
 		ImageFile::setMemoryBudget(null);
+		self::assertSame(10, ImageFile::getMaxParts());
+		ImageFile::setMaxParts(null);
+		self::assertNull(ImageFile::getMemoryBudget());
+		self::assertNull(ImageFile::getBudgetCeiling(ImageFile::BudgetBytesPerPart));
 		self::assertSame(ImageFile::DefaultMaxParts, ImageFile::getMaxParts());
 		self::assertSame(PNGImage::MaxInflatedSize, PNGImage::getMaxInflatedSize());
 		self::assertSame(ImageGraphics::DefaultMaxPixels, ImageGraphics::getMaxPixels());
+	}
+
+	public function testTheBudgetIsHalfTheMemoryLimitUntilOneIsSet()
+	{
+		$gib = 1 << 30;
+		self::assertSame(0.5, ImageFile::DefaultBudgetShare);
+
+		ini_set('memory_limit', '16G');
+		self::assertSame(8 * $gib, ImageFile::getMemoryBudget());
+		self::assertSame(intdiv(8 * $gib, ImageFile::BudgetBytesPerPart), ImageFile::getMaxParts());
+		self::assertSame($gib, PNGImage::getMaxInflatedSize());
+		self::assertSame(intdiv($gib, 2), ImageGraphics::getMaxPixels());
+
+		// The limit is read each time, in whichever way PHP was given it.
+		ini_set('memory_limit', '32g');
+		self::assertSame(16 * $gib, ImageFile::getMemoryBudget());
+		ini_set('memory_limit', (string) (64 * $gib));
+		self::assertSame(32 * $gib, ImageFile::getMemoryBudget());
+		self::assertSame(32 * $gib, ImageFile::getMemoryBudget(), 'and parsed once for each value it takes');
+
+		// A budget that was set does not follow the limit, and unset it does again.
+		ImageFile::setMemoryBudget($gib);
+		self::assertSame($gib, ImageFile::getMemoryBudget());
+		ImageFile::setMemoryBudget(null);
+		self::assertSame(32 * $gib, ImageFile::getMemoryBudget());
+
+		// No limit is no budget: nothing to take half of.
+		ini_set('memory_limit', '-1');
+		self::assertNull(ImageFile::getMemoryBudget());
+		self::assertSame(ImageFile::DefaultMaxParts, ImageFile::getMaxParts());
+	}
+
+	public function testABudgetMayBeASizeOrAShareOfTheMemoryLimit()
+	{
+		$sizes = [
+			'1024' => 1024,
+			'512K' => 512 << 10,
+			'256M' => 256 << 20,
+			'1G' => 1 << 30,
+			'2g' => 2 << 30,
+			' 64 M ' => 64 << 20,
+			'0' => 0,
+			'99999999999999999999G' => intdiv(PHP_INT_MAX, 1 << 30) << 30,
+		];
+		foreach ($sizes as $text => $bytes) {
+			ImageFile::setMemoryBudget((string) $text);
+			self::assertSame($bytes, ImageFile::getMemoryBudget(), "'$text'");
+		}
+		self::assertSame(intdiv(256 << 20, ImageFile::BudgetBytesPerPart), (function () {
+			ImageFile::setMemoryBudget('256M');
+			return ImageFile::getMaxParts();
+		})());
+
+		// A share is of the limit the process runs under, read when it is asked for.
+		ini_set('memory_limit', '16G');
+		$gib = 1 << 30;
+		foreach (['25%' => 4 * $gib, '12.5%' => 2 * $gib, ' 100 % ' => 16 * $gib, '0%' => 0] as $text => $bytes) {
+			ImageFile::setMemoryBudget($text);
+			self::assertSame($bytes, ImageFile::getMemoryBudget(), "'$text'");
+		}
+		ImageFile::setMemoryBudget('25%');
+		ini_set('memory_limit', '32G');
+		self::assertSame(8 * $gib, ImageFile::getMemoryBudget());
+		self::assertSame($gib, PNGImage::getMaxInflatedSize());
+
+		// A share of no limit is no budget.
+		ini_set('memory_limit', '-1');
+		self::assertNull(ImageFile::getMemoryBudget());
+		self::assertSame(ImageGraphics::DefaultMaxPixels, ImageGraphics::getMaxPixels());
+	}
+
+	public function testABudgetThatIsNotOneIsRefused()
+	{
+		ImageFile::setMemoryBudget('256M');
+		foreach ([-1, '-5M', '150%', '100.5%', '5.5M', '1T', '1GB', 'lots', '', '%'] as $budget) {
+			try {
+				ImageFile::setMemoryBudget($budget);
+				self::fail("'$budget' is not a budget");
+			} catch (\InvalidArgumentException $e) {
+				self::assertStringContainsString("'$budget'", $e->getMessage());
+			}
+			self::assertSame(256 << 20, ImageFile::getMemoryBudget(), 'and the budget is as it was');
+		}
 	}
 
 	public function testABudgetIsWhatRefusesAFileThatWouldNotFitIt()
@@ -60,12 +183,14 @@ class PartCeilingTest extends PHPUnit\Framework\TestCase
 		$png = $this->png(str_repeat($this->pngChunk('tEXt'), 300));
 		self::assertInstanceOf(PNGImage::class, PNGImage::fromString($png));
 
-		ImageFile::setMemoryBudget(200 * ImageFile::BudgetBytesPerPart);
-		try {
-			PNGImage::fromString($png);
-			self::fail('a file over its budget was opened');
-		} catch (\UnexpectedValueException $e) {
-			self::assertStringContainsString('parts', $e->getMessage());
+		foreach ([200 * ImageFile::BudgetBytesPerPart, '400K'] as $budget) {
+			ImageFile::setMemoryBudget($budget);
+			try {
+				PNGImage::fromString($png);
+				self::fail('a file over its budget was opened');
+			} catch (\UnexpectedValueException $e) {
+				self::assertStringContainsString('parts', $e->getMessage());
+			}
 		}
 	}
 

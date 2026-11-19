@@ -83,8 +83,26 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	 */
 	public const BudgetBytesPerPixel = 16;
 
-	/** @var int The most structural parts a file may hold whatever its length. */
-	private static int $_maxParts = self::DefaultMaxParts;
+	/**
+	 * @var float The share of PHP's `memory_limit` that is the {@see getMemoryBudget() memory
+	 *   budget} until one is set: half, the rest being the application's and the file's own.
+	 */
+	public const DefaultBudgetShare = 0.5;
+
+	/** @var ?int The part ceiling set at run time, or null for the budget's. */
+	private static ?int $_maxParts = null;
+
+	/**
+	 * @var float|int The memory budget: a number of bytes as an integer, or a share of
+	 *   PHP's `memory_limit` as a fraction.
+	 */
+	private static float|int $_budget = self::DefaultBudgetShare;
+
+	/** @var ?string The `memory_limit` setting {@see $_limitBytes} was read from. */
+	private static ?string $_limitText = null;
+
+	/** @var ?int That setting in bytes, or null when it states no limit. */
+	private static ?int $_limitBytes = null;
 
 	/** @var string The raw image bytes. */
 	private string $_bytes = '';
@@ -113,28 +131,29 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	 * A file is allowed this many parts plus one more for every {@see BytesPerExtraPart}
 	 * bytes of its length, so a large file of ordinary parts — a long animation, a PNG of
 	 * many `IDAT` chunks, a movie's media list — is never refused for being large.
-	 * @return int The ceiling, in parts.
+	 * @return int The ceiling, in parts: the one {@see setMaxParts() set}, else the
+	 *   {@see getMemoryBudget() memory budget}'s, else {@see DefaultMaxParts}.
 	 */
 	public static function getMaxParts(): int
 	{
-		return self::$_maxParts;
+		return self::$_maxParts ?? self::getBudgetCeiling(self::BudgetBytesPerPart) ?? self::DefaultMaxParts;
 	}
 
 	/**
 	 * Sets the part ceiling.  Raise it, with the memory limit, to open a file that really
 	 * does hold that many small parts.
-	 * @param ?int $parts The ceiling in parts, or null to restore {@see DefaultMaxParts}.
+	 * @param ?int $parts The ceiling in parts, or null to leave it to the
+	 *   {@see getMemoryBudget() memory budget} again.
 	 */
 	public static function setMaxParts(?int $parts): void
 	{
-		self::$_maxParts = $parts ?? self::DefaultMaxParts;
+		self::$_maxParts = $parts;
 	}
 
 	/**
-	 * Sets the three ceilings on untrusted input from one number: the memory the
-	 * application means to leave the library.  PHP cannot catch running out of memory, so
-	 * the library refuses, with an exception, what would not fit -- and the budget is what
-	 * says how much that is:
+	 * Returns the memory budget: the memory the library sizes its three ceilings on
+	 * untrusted input to.  PHP cannot catch running out of memory, so the library refuses,
+	 * with an exception, what would not fit -- and the budget is what says how much that is:
 	 *
 	 * - the {@see getMaxParts() part ceiling} is one part for every
 	 *   {@see BudgetBytesPerPart} bytes,
@@ -143,28 +162,106 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	 * - the {@see ImageGraphics::getMaxPixels() pixel ceiling} one pixel for every
 	 *   {@see BudgetBytesPerPixel}.
 	 *
-	 * A budget of 128 MiB gives the parts and inflation defaults; the pixel default is
-	 * larger than that budget allows, because a raster is only decoded when it is asked
-	 * for.  The ratios are measured peaks with room to spare, not a meter: nothing watches
-	 * memory while a file is read, so the same file opens or is refused the same way
-	 * whatever else the application holds.  Each ceiling's own setter still moves it alone
-	 * afterwards.
+	 * Until one is {@see setMemoryBudget() set} the budget is {@see DefaultBudgetShare half}
+	 * of PHP's `memory_limit`, read each time it is asked for, so the ceilings follow the
+	 * limit the process really runs under.  A process with no memory limit has no budget,
+	 * and the three ceilings are then their fixed defaults ({@see DefaultMaxParts},
+	 * {@see PNGImage::MaxInflatedSize}, {@see ImageGraphics::DefaultMaxPixels}).
 	 *
-	 * What no ceiling covers is the length of the file itself.  Reading one whole holds it
-	 * and the rebuilt copy in memory, and only the caller decides what to pass in.
-	 * @param ?int $bytes The budget in bytes, or null to restore all three defaults.
+	 * The ratios are measured peaks with room to spare, not a meter: the limit is
+	 * configuration and nothing watches memory while a file is read, so the same file opens
+	 * or is refused the same way whatever else the application holds.  What no ceiling
+	 * covers is the length of the file itself.  Reading one whole holds it and the rebuilt
+	 * copy in memory, and only the caller decides what to pass in.
+	 * @return ?int The budget in bytes, or null when there is none.
 	 */
-	public static function setMemoryBudget(?int $bytes): void
+	public static function getMemoryBudget(): ?int
 	{
-		if ($bytes === null) {
-			self::setMaxParts(null);
-			PNGImage::setMaxInflatedSize(null);
-			ImageGraphics::setMaxPixels(null);
-			return;
+		if (is_int(self::$_budget)) {
+			return self::$_budget;
 		}
-		self::setMaxParts(intdiv($bytes, self::BudgetBytesPerPart));
-		PNGImage::setMaxInflatedSize(intdiv($bytes, self::BudgetBytesPerInflatedByte));
-		ImageGraphics::setMaxPixels(intdiv($bytes, self::BudgetBytesPerPixel));
+		$limit = self::memoryLimit();
+		return $limit === null ? null : (int) ($limit * self::$_budget);
+	}
+
+	/**
+	 * Sets the {@see getMemoryBudget() memory budget}, and with it every ceiling that has
+	 * not been set on its own.  A ceiling given to its own setter keeps that value,
+	 * whichever of the two calls came first, until the setter is handed null.
+	 * @param null|int|string $budget The budget as a number of bytes, as a size in PHP's
+	 *   own shorthand (`'512K'`, `'256M'`, `'1G'`), or as a share of PHP's `memory_limit`
+	 *   (`'25%'`, which is no budget when the process has no limit); null restores the
+	 *   default of half the limit.
+	 * @throws \InvalidArgumentException When the budget is negative, over 100%, or not one
+	 *   of those forms.
+	 */
+	public static function setMemoryBudget(null|int|string $budget): void
+	{
+		$value = match (true) {
+			$budget === null => self::DefaultBudgetShare,
+			is_int($budget) => $budget,
+			default => self::parseBudget($budget),
+		};
+		if ($value === null || $value < 0 || (is_float($value) && $value > 1)) {
+			throw new \InvalidArgumentException(sprintf('Memory budget \'%s\' is not a number of bytes, a size such as \'256M\', or a share of the memory limit up to \'100%%\'.', $budget));
+		}
+		self::$_budget = $value;
+	}
+
+	/**
+	 * Returns what a ceiling is under the {@see getMemoryBudget() memory budget}.
+	 * @param int $bytesPerUnit The bytes of budget that allow one of what the ceiling counts.
+	 * @return ?int The ceiling, or null when there is no budget.
+	 */
+	public static function getBudgetCeiling(int $bytesPerUnit): ?int
+	{
+		$budget = self::getMemoryBudget();
+		return $budget === null ? null : intdiv($budget, $bytesPerUnit);
+	}
+
+	/**
+	 * Reads a budget written as text.
+	 * @param string $text A share (`'25%'`) or a size (`'256M'`).
+	 * @return null|float|int The share as a fraction, the size in bytes, or null when the
+	 *   text is neither.
+	 */
+	private static function parseBudget(string $text): null|float|int
+	{
+		if (preg_match('/^\s*(\d+(?:\.\d+)?)\s*%\s*$/', $text, $match) === 1) {
+			return (float) $match[1] / 100;
+		}
+		return self::parseSize($text);
+	}
+
+	/**
+	 * Reads a size in the shorthand PHP's own settings use: a whole number of bytes,
+	 * optionally followed by `K`, `M` or `G` for the powers of 1024.
+	 * @param string $text The size.
+	 * @return ?int The bytes, or null when the text is not a size -- which is what `-1`,
+	 *   PHP's way of stating no limit, reads as.
+	 */
+	private static function parseSize(string $text): ?int
+	{
+		if (preg_match('/^\s*(\d+)\s*([KMG]?)\s*$/i', $text, $match) !== 1) {
+			return null;
+		}
+		$unit = 1 << ['' => 0, 'K' => 10, 'M' => 20, 'G' => 30][strtoupper($match[2])];
+		// More than an integer holds is simply as much as one holds.
+		return min((int) $match[1], intdiv(PHP_INT_MAX, $unit)) * $unit;
+	}
+
+	/**
+	 * Returns PHP's `memory_limit`, parsed once for each value the setting takes.
+	 * @return ?int The limit in bytes, or null when the process has none.
+	 */
+	private static function memoryLimit(): ?int
+	{
+		$text = (string) ini_get('memory_limit');
+		if ($text !== self::$_limitText) {
+			self::$_limitText = $text;
+			self::$_limitBytes = self::parseSize($text);
+		}
+		return self::$_limitBytes;
 	}
 
 	/**
@@ -177,7 +274,7 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	 */
 	public static function allowsPartCount(int $count, int $bytes = 0): bool
 	{
-		return $count <= self::$_maxParts + intdiv($bytes, self::BytesPerExtraPart);
+		return $count <= self::getMaxParts() + intdiv($bytes, self::BytesPerExtraPart);
 	}
 
 	/**
@@ -190,7 +287,7 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	public static function assertPartCount(int $count, int $bytes = 0): void
 	{
 		if (!self::allowsPartCount($count, $bytes)) {
-			throw new \UnexpectedValueException(sprintf('The data holds more than the %d parts its ceiling and length allow; raise it with ImageFile::setMaxParts().', self::$_maxParts + intdiv($bytes, self::BytesPerExtraPart)));
+			throw new \UnexpectedValueException(sprintf('The data holds more than the %d parts its ceiling and length allow; raise it with ImageFile::setMaxParts().', self::getMaxParts() + intdiv($bytes, self::BytesPerExtraPart)));
 		}
 	}
 

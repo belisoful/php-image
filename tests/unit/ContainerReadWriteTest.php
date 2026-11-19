@@ -9,6 +9,7 @@ use Belisoful\Image\Meta\IPTC;
 use Belisoful\Image\Meta\IPTCTags;
 use Belisoful\Image\Meta\XMP;
 use Belisoful\Image\ImageChunk;
+use Belisoful\Image\ImageFile;
 use Belisoful\Image\ImageGraphics;
 use Belisoful\Image\JPEGImage;
 use Belisoful\Image\PhotoshopIRB;
@@ -557,6 +558,15 @@ class ContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		self::assertSame(16 * 1024 * 1024, PNGImage::MaxInflatedSize);
 		self::assertSame(1024, TSmallInflatePNG::getMaxInflatedSize());
 
+		// A subclass that states its own ceiling is held to it, not to the memory budget.
+		try {
+			ImageFile::setMemoryBudget('1G');
+			self::assertSame(128 << 20, PNGImage::getMaxInflatedSize());
+			self::assertSame(1024, TSmallInflatePNG::getMaxInflatedSize());
+		} finally {
+			ImageFile::setMemoryBudget(null);
+		}
+
 		// The ceiling also moves at run time, for every PNG class; none at all refuses each
 		// compressed chunk rather than asking zlib for no limit.
 		try {
@@ -571,7 +581,7 @@ class ContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		} finally {
 			PNGImage::setMaxInflatedSize(null);
 		}
-		self::assertSame(PNGImage::MaxInflatedSize, PNGImage::getMaxInflatedSize());
+		self::assertSame(ImageFile::getBudgetCeiling(ImageFile::BudgetBytesPerInflatedByte) ?? PNGImage::MaxInflatedSize, PNGImage::getMaxInflatedSize(), 'set back, the ceiling is the memory budget\'s again');
 		self::assertSame($profile, PNGImage::fromString($bytes)->getICCProfile());
 	}
 

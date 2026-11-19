@@ -41,10 +41,10 @@ namespace Belisoful\Image;
 class ImageGraphics
 {
 	/**
-	 * @var int The default {@see getMaxPixels() pixel ceiling}: 2^28, a 16384 by 16384
-	 *   raster, which is 768 MiB once decoded to RGB and was measured at three times that
-	 *   while it is turned into an image.  It bounds what a file may claim, not what fits
-	 *   the memory limit: {@see ImageFile::setMemoryBudget()} sizes it to one.
+	 * @var int The {@see getMaxPixels() pixel ceiling} of a process with no memory limit,
+	 *   and so no {@see ImageFile::getMemoryBudget() memory budget} to size one from: 2^28,
+	 *   a 16384 by 16384 raster, which is 768 MiB once decoded to RGB and was measured at
+	 *   three times that while it is turned into an image.
 	 */
 	public const DefaultMaxPixels = 0x10000000;
 
@@ -54,8 +54,8 @@ class ImageGraphics
 	/** @var array<string, ImageGraphicsLibraryInterface> The resolved libraries, by mode name. */
 	private static array $_libraries = [];
 
-	/** @var int The most pixels a raster may declare and still be decoded. */
-	private static int $_maxPixels = self::DefaultMaxPixels;
+	/** @var ?int The pixel ceiling set at run time, or null for the budget's. */
+	private static ?int $_maxPixels = null;
 
 	/**
 	 * Returns the pixel ceiling: the most pixels a raster may declare and still be decoded
@@ -65,21 +65,23 @@ class ImageGraphics
 	 * a few dozen bytes that claims 65535 by 65535 exhausts the memory limit: a fatal
 	 * error no caller can catch.  Reading and rewriting metadata never decodes the raster
 	 * and is not subject to it.
-	 * @return int The ceiling, in pixels.
+	 * @return int The ceiling, in pixels: the one {@see setMaxPixels() set}, else the
+	 *   {@see ImageFile::getMemoryBudget() memory budget}'s, else {@see DefaultMaxPixels}.
 	 */
 	public static function getMaxPixels(): int
 	{
-		return self::$_maxPixels;
+		return self::$_maxPixels ?? ImageFile::getBudgetCeiling(ImageFile::BudgetBytesPerPixel) ?? self::DefaultMaxPixels;
 	}
 
 	/**
 	 * Sets the pixel ceiling.  Raise it, with the memory limit, to decode a larger scan.
-	 * @param ?int $pixels The ceiling in pixels, or null to restore
-	 *   {@see DefaultMaxPixels}.  Zero or less refuses every raster.
+	 * @param ?int $pixels The ceiling in pixels, or null to leave it to the
+	 *   {@see ImageFile::getMemoryBudget() memory budget} again.  Zero or less refuses
+	 *   every raster.
 	 */
 	public static function setMaxPixels(?int $pixels): void
 	{
-		self::$_maxPixels = $pixels ?? self::DefaultMaxPixels;
+		self::$_maxPixels = $pixels;
 	}
 
 	/**
@@ -90,8 +92,9 @@ class ImageGraphics
 	 */
 	public static function assertPixelCount(int $width, int $height): void
 	{
-		if ($width * $height > self::$_maxPixels) {
-			throw new \UnexpectedValueException(sprintf('A %dx%d raster exceeds the ceiling of %d pixels; raise it with ImageGraphics::setMaxPixels().', $width, $height, self::$_maxPixels));
+		$ceiling = self::getMaxPixels();
+		if ($width * $height > $ceiling) {
+			throw new \UnexpectedValueException(sprintf('A %dx%d raster exceeds the ceiling of %d pixels; raise it with ImageGraphics::setMaxPixels().', $width, $height, $ceiling));
 		}
 	}
 

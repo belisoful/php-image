@@ -73,12 +73,14 @@ class PNGImage extends ImageFile
 	 *   The size is set by what reading costs, not by what is stored: a hex-encoded raw
 	 *   profile peaks at over four times its inflated length while it is decoded and
 	 *   parsed, so this is the most that still fits a 128 MiB memory limit.
-	 *   This is the default; {@see setMaxInflatedSize()} moves the ceiling at run time, and
-	 *   it is resolved late (`static::`), so a subclass may raise or lower it too.
+	 *   This is the ceiling of a process with no memory limit, and so no
+	 *   {@see ImageFile::getMemoryBudget() memory budget} to size one from;
+	 *   {@see setMaxInflatedSize()} moves the ceiling at run time, and it is resolved late
+	 *   (`static::`), so a subclass that states its own is held to that instead.
 	 */
 	public const MaxInflatedSize = 0x1000000;
 
-	/** @var ?int The inflation ceiling set at run time, or null for {@see MaxInflatedSize}. */
+	/** @var ?int The inflation ceiling set at run time, or null for the budget's. */
 	private static ?int $_maxInflatedSize = null;
 
 	/**
@@ -469,18 +471,22 @@ class PNGImage extends ImageFile
 
 	/**
 	 * Returns the inflation ceiling: the most bytes a compressed chunk may inflate to.
-	 * @return int The ceiling, in bytes.
+	 * @return int The ceiling, in bytes: the one {@see setMaxInflatedSize() set}, else the
+	 *   one a subclass states as its own {@see MaxInflatedSize}, else the
+	 *   {@see ImageFile::getMemoryBudget() memory budget}'s, else {@see MaxInflatedSize}.
 	 */
 	public static function getMaxInflatedSize(): int
 	{
-		return self::$_maxInflatedSize ?? static::MaxInflatedSize;
+		$own = static::MaxInflatedSize === self::MaxInflatedSize ? null : static::MaxInflatedSize;
+		return self::$_maxInflatedSize ?? $own ?? self::getBudgetCeiling(self::BudgetBytesPerInflatedByte) ?? self::MaxInflatedSize;
 	}
 
 	/**
 	 * Sets the inflation ceiling.  Raise it, with the memory limit, to read a compressed
 	 * chunk that really is that large.
-	 * @param ?int $bytes The ceiling in bytes, or null to restore {@see MaxInflatedSize}.
-	 *   Zero or less reads every compressed chunk as undecodable.
+	 * @param ?int $bytes The ceiling in bytes, or null to leave it to the
+	 *   {@see ImageFile::getMemoryBudget() memory budget} again.  Zero or less reads every
+	 *   compressed chunk as undecodable.
 	 */
 	public static function setMaxInflatedSize(?int $bytes): void
 	{
