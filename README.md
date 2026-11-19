@@ -59,7 +59,10 @@ keeps its ICC profile inside the codestream, so those setters throw too.
 - **EXIF** — the full model over IFD0/EXIF/GPS/Interoperability/IFD1, with all 220 known tags
   of Exif 3.1 (CIPA DC-008-2026) and human-readable interpretation of their values. Rewriting
   **pins the maker note at its original byte offset**, because maker notes are full of pointers
-  into themselves and moving one corrupts it.
+  into themselves and moving one corrupts it. One pointer this cannot keep true: a Canon maker
+  note's *original decision data* offset (tag 0x0083) leads outside the maker note, is not
+  modelled, and is written back as read — so it goes stale once a rewrite moves that data,
+  which no edit leaves verifiable anyway.
 - **Maker notes** — thirteen manufacturers decoded (Agfa, Canon, Casio, Epson, Fujifilm,
   Konica/Minolta, Kyocera/Contax, Nikon, Olympus, Panasonic, Pentax, Ricoh, Sony), quirks and
   all: forced byte orders, note-relative offsets, embedded TIFFs, packed camera settings.
@@ -89,7 +92,8 @@ them with the same protection the writer itself applies.
 
 Files from strangers get three ceilings, because a parser that takes a file at its word can
 be made to ask for gigabytes by a file of a few hundred bytes. A compressed PNG chunk inflates
-to at most `PNGImage::MaxInflatedSize` (16 MiB) and reads as absent past it. The pure-PHP
+to at most `PNGImage::getMaxInflatedSize()` (16 MiB; `setMaxInflatedSize()` moves it) and
+reads as absent past it. The pure-PHP
 raster decoders refuse a TIFF or GIF frame that declares more pixels than
 `ImageGraphics::getMaxPixels()` (2^28, a 16384 by 16384 raster; `setMaxPixels()` moves it);
 reading and rewriting metadata never decodes the pixels, so that one does not apply there.
@@ -97,6 +101,13 @@ And every parser counts the parts it makes a record of — segments, chunks, box
 directory entries — against `ImageFile::getMaxParts()`: 65,536, plus one more for every 256
 bytes of the file, so a file of nothing but empty parts is refused while a large file of
 ordinary ones never is (`setMaxParts()` moves it).
+
+`ImageFile::setMemoryBudget()` sets all three from one number, the memory the application
+means to leave the library: 128 MiB gives the parts and inflation defaults and a pixel ceiling
+of 2^23. The ratios behind it are measured peaks, not a meter — nothing watches memory while a
+file is read, so a file opens or is refused the same way whatever else the application holds.
+No ceiling covers the length of the file itself: reading one whole holds it and the rebuilt
+copy in memory.
 
 ## Streams
 

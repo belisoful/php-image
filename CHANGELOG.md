@@ -50,6 +50,16 @@ so.
   rewrite updates to what it actually wrote.
 - **A shared ISO BMFF box model** (`BMFFBox`), lifted out of the JUMBF reader: the 32-bit
   size, the 64-bit and run-to-the-end forms, `uuid` user types and depth-capped nesting.
+- **A memory budget**: `ImageFile::setMemoryBudget()` sets the three ceilings from one number —
+  one part for every 2,048 bytes of it, one inflated byte for every 8, one decoded pixel for
+  every 16. The ratios are measured peaks with room to spare: a hex-encoded raw profile peaks
+  at 4.4 times its inflated length, and a TIFF raster decoded to an image at 9 bytes a pixel.
+  128 MiB gives the parts and inflation defaults; the pixel default is larger than that budget
+  allows, a raster being decoded only when it is asked for. It is not a meter — nothing
+  watches memory while a file is read, so a file opens or is refused the same way whatever
+  else the application holds — and it does not cover the length of the file itself.
+  `PNGImage::getMaxInflatedSize()` and `setMaxInflatedSize()` come with it, so the inflation
+  ceiling moves at run time like the other two.
 - **A pixel ceiling** on the pure-PHP raster decoders: `ImageGraphics::getMaxPixels()` and
   `setMaxPixels()`, 2^28 by default (a 16384 by 16384 raster). `TIFFImage::getImage()` and
   `GIFFrame::getPixels()` size their buffers from the dimensions a file states, so a TIFF of
@@ -93,6 +103,26 @@ let a small file stop a PHP process or leave data behind that the caller had rem
 
 ### Fixed
 
+- `save()` wrote over the file in place, so a write that failed part-way — a full disk — left
+  half a file where the original had been. It now writes a temporary file beside the target
+  and renames it over, keeping the target's permission bits and following a symbolic link to
+  the file it names; a short write removes the temporary file and throws, the original
+  untouched. Where no rename is to be had the bytes are written in place as before: a
+  stream-wrapper path, a target that is not a regular file, a directory that refuses the
+  temporary file or the rename. `EXIFAudio::save()` goes the same way, both through
+  `StreamIOTrait::writeFile()`.
+- Rewriting a file stamped an IPTC envelope on it. `IPTC::toBinary()` completed every set with
+  the mandatory envelope record, so a JPEG whose IPTC had none — most of them — came back from
+  a rewrite with today's date in `DateSent` and an `EnvelopeNumber` derived from it, edited or
+  not. A set read from bytes is now written with the datasets it holds; a set built from
+  nothing is still completed, and `validate()` completes either on request.
+- Extended XMP in a JPEG was read whether or not the main packet named it. With no
+  `xmpNote:HasExtendedXMP`, or one naming a digest no segment carried, the first extended
+  packet in the file was merged anyway — which is what an editor leaves behind when it
+  rewrites the main packet and not the extension. Only the named packet is read now, and only
+  when every byte of it arrived; any other is dropped on a rewrite. The digest is matched as a
+  name and not recomputed from the text, since writers in the wild name their packets with
+  digests of something else.
 - A privacy scrub left identifying data in place. XMP face regions (`mwg-rs:Regions` and
   Microsoft's `MP:RegionInfo`, which name the people pictured) are now removed under `Author`;
   and `clearPrivateData()` on a JPEG or GIF drops the trailing data for any category, since an
