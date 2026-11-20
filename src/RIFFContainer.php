@@ -49,6 +49,18 @@ class RIFFContainer
 	use StreamIOTrait;
 
 	/**
+	 * @var class-string<ImageChunk> The class created for chunks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ChunkClass = ImageChunk::class;
+
+	/**
+	 * @var class-string<RIFFList> The class created for RIFF lists.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ListClass = RIFFList::class;
+
+	/**
 	 * Final so the static parse factories can safely instantiate any subclass with
 	 * `new static()`; construction state comes from parse(), never constructor arguments.
 	 */
@@ -157,15 +169,15 @@ class RIFFContainer
 				$binary->seek($start + 8); // the list type was only peeked at
 			}
 			if (in_array($id, $deferTypes, true) || ($isList && in_array($qualified, $deferTypes, true))) {
-				$riff->_chunks[] = ImageChunk::deferred($id, $size, $start + 8, new SourceRange($stream, $start, $whole));
+				$riff->_chunks[] = static::ChunkClass::deferred($id, $size, $start + 8, new SourceRange($stream, $start, $whole));
 			} else {
 				$payload = $binary->readBytes($size);
 				if ($id === RIFFChunkType::DataSize64) {
 					$sizes64 = self::readSize64Chunk($payload);   // the first chunk sizes the rest
 				}
 				$chunk = $isList
-					? new RIFFList($id, $size, $start + 8, $payload, 0, $big)
-					: new ImageChunk($id, $size, $start + 8, $payload);
+					? new (static::ListClass)($id, $size, $start + 8, $payload, 0, $big)
+					: new (static::ChunkClass)($id, $size, $start + 8, $payload);
 				if ($chunk instanceof RIFFList) {
 					$chunk->sharePartCount($count, $walked);
 				}
@@ -408,15 +420,18 @@ class RIFFContainer
 	{
 		$big = $this->getIsBigEndian();
 		$this->updateSize64();
-		$body = $this->getFormType();
+		// Gathered and joined once, so no chunk is copied to its header and again to the file.
+		$parts = [$this->_signature, '', $this->getFormType()];
+		$length = strlen($parts[2]);
 		foreach ($this->getChunks() as $chunk) {
 			$data = $chunk->getData();
-			$body .= $chunk->getType() . self::packSize($this->storedSize($chunk->getType(), strlen($data)), $big) . $data;
-			if (strlen($data) & 1) {
-				$body .= "\0"; // pad to an even length
-			}
+			$parts[] = $chunk->getType() . self::packSize($this->storedSize($chunk->getType(), strlen($data)), $big);
+			$parts[] = $data;
+			$parts[] = str_repeat("\0", strlen($data) & 1);   // pad to an even length
+			$length += 8 + strlen($data) + (strlen($data) & 1);
 		}
-		return $this->_signature . self::packSize($this->storedSize('', strlen($body)), $big) . $body;
+		$parts[1] = self::packSize($this->storedSize('', $length), $big);
+		return implode('', $parts);
 	}
 
 	/**
@@ -507,11 +522,11 @@ class RIFFContainer
 			$payload = substr($bytes, $i + 8, max(0, min($size, $end - $i - 8)));
 			ImageFile::assertPartCount(++$count, $total);
 			if ($id === RIFFChunkType::RiffList && strlen($payload) >= 4 && $depth < RIFFList::MaxDepth) {
-				$list = new RIFFList($id, $size, $origin + $i + 8, $payload, $depth, $bigEndian);
+				$list = new (static::ListClass)($id, $size, $origin + $i + 8, $payload, $depth, $bigEndian);
 				$list->sharePartCount($count, $total);
 				$chunks[] = $list;
 			} else {
-				$chunks[] = new ImageChunk($id, $size, $origin + $i + 8, $payload);
+				$chunks[] = new (static::ChunkClass)($id, $size, $origin + $i + 8, $payload);
 			}
 			$i += 8 + $size + ($size & 1); // payload padded to an even length
 		}

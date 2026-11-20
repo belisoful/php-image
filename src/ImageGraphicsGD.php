@@ -32,6 +32,18 @@ use Belisoful\Image\ICC\ICCTransform;
 class ImageGraphicsGD implements ImageGraphicsLibraryInterface
 {
 	/**
+	 * @var class-string<ICCProfile> The class created for ICC profiles.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ICCProfileClass = ICCProfile::class;
+
+	/**
+	 * @var class-string<ICCTransform> The class created for ICC transforms.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ICCTransformClass = ICCTransform::class;
+
+	/**
 	 * Returns the library's {@see ImageGraphicsMode} name.
 	 * @return string The mode name.
 	 */
@@ -284,12 +296,12 @@ class ImageGraphicsGD implements ImageGraphicsLibraryInterface
 	public function transformICCProfile(\GdImage|\Imagick $image, string $source, string $destination): bool
 	{
 		$image = $this->gdImage($image);
-		$sourceProfile = ICCProfile::parse($source);
-		$destinationProfile = ICCProfile::parse($destination);
+		$sourceProfile = static::ICCProfileClass::parse($source);
+		$destinationProfile = static::ICCProfileClass::parse($destination);
 		if ($sourceProfile === null || $destinationProfile === null) {
 			return false;
 		}
-		$transform = ICCTransform::between($sourceProfile, $destinationProfile);
+		$transform = static::ICCTransformClass::between($sourceProfile, $destinationProfile);
 		if ($transform === null) {
 			return false;
 		}

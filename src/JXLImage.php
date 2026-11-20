@@ -57,6 +57,24 @@ use Belisoful\Image\Meta\XMP;
  */
 class JXLImage extends ImageFile
 {
+	/**
+	 * @var class-string<BMFFBox> The class created for boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const BoxClass = BMFFBox::class;
+
+	/**
+	 * @var class-string<JUMBFBox> The class created for JUMBF boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const JumbfBoxClass = JUMBFBox::class;
+
+	/**
+	 * @var class-string<JXLSizeHeader> The class created for JPEG XL size headers.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const SizeHeaderClass = JXLSizeHeader::class;
+
 	/** The bare codestream signature. */
 	public const CodestreamSignature = "\xFF\x0A";
 
@@ -222,7 +240,7 @@ class JXLImage extends ImageFile
 	public function getSizeHeader(): ?JXLSizeHeader
 	{
 		$codestream = $this->getCodestream();
-		return $codestream === null ? null : JXLSizeHeader::fromCodestream($codestream);
+		return $codestream === null ? null : static::SizeHeaderClass::fromCodestream($codestream);
 	}
 
 	/**
@@ -274,7 +292,7 @@ class JXLImage extends ImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = XMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -303,7 +321,7 @@ class JXLImage extends ImageFile
 			return null;
 		}
 		try {
-			$exif = EXIF::fromTiffString($tiff);
+			$exif = static::ExifClass::fromTiffString($tiff);
 		} catch (\RuntimeException $e) {
 			return null;
 		}
@@ -336,7 +354,7 @@ class JXLImage extends ImageFile
 				continue;
 			}
 			// A `jumb` box always re-reads as one JUMBF superbox, so this adds exactly one.
-			foreach (JUMBFBox::parseBoxes($box->toBinary()) as $jumbf) {
+			foreach (static::JumbfBoxClass::parseBoxes($box->toBinary()) as $jumbf) {
 				$boxes[] = $jumbf;
 			}
 		}
@@ -354,7 +372,7 @@ class JXLImage extends ImageFile
 		$at = $this->metaInsertIndex($kept);
 		$fresh = [];
 		foreach ($boxes as $jumbf) {
-			foreach (BMFFBox::parseBoxes($jumbf->toBinary()) as $parsed) {
+			foreach (static::BoxClass::parseBoxes($jumbf->toBinary()) as $parsed) {
 				$fresh[] = $parsed;
 			}
 		}
@@ -433,11 +451,12 @@ class JXLImage extends ImageFile
 		if ($this->_isBareCodestream) {
 			return $this->_codestream;
 		}
-		$bytes = '';
+		$parts = [];
 		foreach ($this->_boxes as $box) {
-			$bytes .= $box->toBinary();
+			array_push($parts, ...$box->toParts());
 		}
-		return $bytes . $this->_remainder;
+		$parts[] = $this->_remainder;
+		return implode('', $parts);
 	}
 
 	/**
@@ -456,7 +475,7 @@ class JXLImage extends ImageFile
 		if (!str_starts_with($bytes, self::Signature)) {
 			throw new \UnexpectedValueException(sprintf('JPEG XL data is invalid: %s.', 'missing the codestream or container signature'));
 		}
-		[$this->_boxes, $this->_remainder] = BMFFBox::parseSequence($bytes);
+		[$this->_boxes, $this->_remainder] = static::BoxClass::parseSequence($bytes);
 		$this->readDimensions();
 	}
 
@@ -471,9 +490,9 @@ class JXLImage extends ImageFile
 			return;
 		}
 		$this->_boxes = [
-			new BMFFBox(self::SignatureBoxType, self::SignatureBoxContent),
-			new BMFFBox(self::FileTypeBox, self::Brand . pack('N', 0) . self::Brand),
-			new BMFFBox(self::CodestreamBox, $this->_codestream),
+			new (static::BoxClass)(self::SignatureBoxType, self::SignatureBoxContent),
+			new (static::BoxClass)(self::FileTypeBox, self::Brand . pack('N', 0) . self::Brand),
+			new (static::BoxClass)(self::CodestreamBox, $this->_codestream),
 		];
 		$this->_isBareCodestream = false;
 		$this->_codestream = '';
@@ -517,12 +536,12 @@ class JXLImage extends ImageFile
 				continue;
 			}
 			if ($payload !== null && !$replaced) {
-				$boxes[] = new BMFFBox($type, $payload);
+				$boxes[] = new (static::BoxClass)($type, $payload);
 				$replaced = true;
 			}
 		}
 		if ($payload !== null && !$replaced) {
-			array_splice($boxes, $this->metaInsertIndex($boxes), 0, [new BMFFBox($type, $payload)]);
+			array_splice($boxes, $this->metaInsertIndex($boxes), 0, [new (static::BoxClass)($type, $payload)]);
 		}
 		$this->_boxes = $boxes;
 	}

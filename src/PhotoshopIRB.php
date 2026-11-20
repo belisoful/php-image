@@ -36,10 +36,23 @@ use Belisoful\Image\Meta\IPTC;
  * ```
  *
  * @author Brad Anderson <belisoful@icloud.com>
+ * @phpstan-consistent-constructor
  */
-class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableInterface
+class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableInterface, ConformableInterface
 {
 	use StreamIOTrait;
+
+	/**
+	 * @var class-string<IPTC> The class created for IPTC record sets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IptcClass = IPTC::class;
+
+	/**
+	 * @var class-string<PhotoshopResource> The class created for Photoshop resources.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ResourceClass = PhotoshopResource::class;
 
 	/** The APP13 segment signature. */
 	public const Signature = "Photoshop 3.0\x00";
@@ -67,14 +80,14 @@ class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableI
 	 * Parses an APP13 payload (or bare 8BIM data), resynchronizing on the 8BIM
 	 * signature to tolerate the padding deviations Photoshop itself writes.
 	 * @param string $data The payload; multiple concatenated APP13 payloads are handled.
-	 * @return false|PhotoshopIRB The parsed set, or false when no resource was found or the
+	 * @return false|static The parsed set, or false when no resource was found or the
 	 *   data holds more resources than the {@see ImageFile::getMaxParts() part ceiling} allows.
 	 */
-	public static function parse(string $data): false|PhotoshopIRB
+	public static function parse(string $data): false|static
 	{
 		// Strip every embedded segment signature (each APP13 chunk repeats it).
 		$data = str_replace(self::Signature, '', $data);
-		$irb = new self();
+		$irb = new static();
 		$len = strlen($data);
 		$pos = strpos($data, self::ResourceSignature);
 		while ($pos !== false && $pos + 10 <= $len) {
@@ -91,7 +104,7 @@ class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableI
 			if (!ImageFile::allowsPartCount(count($irb->_resources) + 1, $len)) {
 				return false;   // a block of nothing but empty resources: absent, like any other that does not parse
 			}
-			$irb->_resources[] = new PhotoshopResource($id, $payload, $name);
+			$irb->_resources[] = new (static::ResourceClass)($id, $payload, $name);
 			$next = min($len, max($sizeAt + 4 + $size + ($size & 1), $pos + 4));
 			// Resynchronize: Photoshop sometimes mispads, so trust the next signature.
 			$pos = strpos($data, self::ResourceSignature, $next);
@@ -103,9 +116,9 @@ class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableI
 	 * Parses 8BIM resources from a PSR-7 stream or stream resource, reading from the
 	 * current position to the end.
 	 * @param mixed $stream The {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
-	 * @return false|PhotoshopIRB The parsed set, or false when no resource was found.
+	 * @return false|static The parsed set, or false when no resource was found.
 	 */
-	public static function fromStream(mixed $stream): false|PhotoshopIRB
+	public static function fromStream(mixed $stream): false|static
 	{
 		return static::parse(static::sourceBytes($stream));
 	}
@@ -190,7 +203,7 @@ class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableI
 			return null;
 		}
 		$data = $resource->getData();
-		$iptc = IPTC::parse($data);
+		$iptc = static::IptcClass::parse($data);
 		return $iptc === false ? null : $iptc;
 	}
 
@@ -204,8 +217,34 @@ class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableI
 		if ($iptc === null) {
 			$this->removeResource(PhotoshopResource::IptcNaa);
 		} elseif ($this->getResource(PhotoshopResource::IptcNaa)?->getData() !== ($data = $iptc->toBinary(null, false))) {
-			$this->setResource(new PhotoshopResource(PhotoshopResource::IptcNaa, $data));
+			$this->setResource(new (static::ResourceClass)(PhotoshopResource::IptcNaa, $data));
 		}
+	}
+
+	/**
+	 * Reports where the IPTC record set the block holds departs from IIM.  The resources
+	 * themselves have no form to depart from: each is its id, its name and its bytes.
+	 * @param int $types The {@see ConformanceCategory} flags to report. Default {@see ConformanceCategory::All}.
+	 * @return array<string, string> What is wrong, by IPTC tag id.
+	 */
+	public function validate(int $types = ConformanceCategory::All): array
+	{
+		return $this->getIPTC()?->validate($types) ?? [];
+	}
+
+	/**
+	 * Corrects what {@see validate()} reports in the IPTC record set the block holds.
+	 * @param int $types The {@see ConformanceCategory} flags to correct. Default {@see ConformanceCategory::Safe}.
+	 * @return int The number of corrections made.
+	 */
+	public function conform(int $types = ConformanceCategory::Safe): int
+	{
+		$iptc = $this->getIPTC();
+		$corrected = $iptc === null ? 0 : $iptc->conform($types);
+		if ($corrected > 0) {
+			$this->setIPTC($iptc);
+		}
+		return $corrected;
 	}
 
 	//

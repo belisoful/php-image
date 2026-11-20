@@ -57,6 +57,18 @@ use Belisoful\Image\Meta\XMP;
  */
 class BMFFFile extends ImageFile
 {
+	/**
+	 * @var class-string<BMFFFileBox> The class created for boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const BoxClass = BMFFFileBox::class;
+
+	/**
+	 * @var class-string<BMFFItem> The class created for meta items.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ItemClass = BMFFItem::class;
+
 	/** The file-type box, whose brand says which flavour of the format this is. */
 	public const FileTypeBox = 'ftyp';
 
@@ -367,7 +379,7 @@ class BMFFFile extends ImageFile
 			$home[0]->setPayload(substr_replace($home[0]->getPayload(), str_repeat("\0", $was), $home[1], $was));
 		}
 		$iloc->setPayload($item->writeLocation($iloc->getPayload(), $offset, strlen($data)));
-		$this->_boxes[] = new BMFFFileBox(self::MediaDataBox, $data);
+		$this->_boxes[] = new (static::BoxClass)(self::MediaDataBox, $data);
 	}
 
 	/**
@@ -406,7 +418,7 @@ class BMFFFile extends ImageFile
 		if ($item === null) {
 			// An entry describes its item in sixteen bits, so a file already holding 65535
 			// items has no id left to give.
-			$this->setBoxes(BMFFFileBox::parseBoxes($before));
+			$this->setBoxes(static::BoxClass::parseBoxes($before));
 			throw new \RuntimeException(sprintf('The new item id %d does not fit the sixteen-bit field an item entry uses.', $id));
 		}
 		$this->setItemData($item, $data);
@@ -485,7 +497,7 @@ class BMFFFile extends ImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = XMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -515,7 +527,7 @@ class BMFFFile extends ImageFile
 			return null;
 		}
 		try {
-			$exif = EXIF::fromTiffString($tiff);
+			$exif = static::ExifClass::fromTiffString($tiff);
 		} catch (\RuntimeException $e) {
 			return null;
 		}
@@ -594,7 +606,7 @@ class BMFFFile extends ImageFile
 				}
 			}
 			if ($value !== null) {
-				$children[] = new BMFFFileBox($type, pack('n', strlen($value)) . pack('n', $language) . $value);
+				$children[] = new (static::BoxClass)($type, pack('n', strlen($value)) . pack('n', $language) . $value);
 			}
 			$udta->setChildren($children);
 		});
@@ -610,7 +622,7 @@ class BMFFFile extends ImageFile
 	{
 		$tags = [];
 		foreach ($this->getItemListBox()?->getChildren() ?? [] as $key) {
-			foreach (BMFFFileBox::parseBoxes($key->getPayload()) as $data) {
+			foreach (static::BoxClass::parseBoxes($key->getPayload()) as $data) {
 				if ($data->getType() !== self::DataBox || strlen($data->getPayload()) < 8) {
 					continue;
 				}
@@ -637,8 +649,8 @@ class BMFFFile extends ImageFile
 			$ilst = $this->requireItemListBox();
 			$children = array_values(array_filter($ilst->getChildren(), fn ($k) => $k->getType() !== $key));
 			if ($value !== null) {
-				$data = new BMFFFileBox(self::DataBox, pack('N', self::TextTypeIndicator) . pack('N', 0) . $value);
-				$children[] = new BMFFFileBox($key, $data->toBinary());
+				$data = new (static::BoxClass)(self::DataBox, pack('N', self::TextTypeIndicator) . pack('N', 0) . $value);
+				$children[] = new (static::BoxClass)($key, $data->toBinary());
 			}
 			$ilst->setChildren($children);
 		});
@@ -758,7 +770,7 @@ class BMFFFile extends ImageFile
 			if ($item === null) {
 				throw new \RuntimeException('The file names no primary item to associate an ICC profile with.');
 			}
-			$ipco->addChild(new BMFFFileBox(self::ColourBox, self::ColourTypeProfile . $profile));
+			$ipco->addChild(new (static::BoxClass)(self::ColourBox, self::ColourTypeProfile . $profile));
 			$this->associateProperty($iprp, $item, count($ipco->getChildren()));
 		});
 	}
@@ -783,11 +795,12 @@ class BMFFFile extends ImageFile
 	 */
 	protected function compose(): string
 	{
-		$bytes = '';
+		$parts = [];
 		foreach ($this->_boxes as $box) {
-			$bytes .= $box->toBinary();
+			array_push($parts, ...$box->toParts());
 		}
-		return $bytes . $this->_remainder;
+		$parts[] = $this->_remainder;
+		return implode('', $parts);
 	}
 
 	/**
@@ -800,7 +813,7 @@ class BMFFFile extends ImageFile
 		if (!self::isBMFF($bytes)) {
 			throw new \UnexpectedValueException(sprintf('ISO base media data is invalid: %s.', 'missing a leading ftyp box'));
 		}
-		[$this->_boxes, $this->_remainder] = BMFFFileBox::parseSequence($bytes);
+		[$this->_boxes, $this->_remainder] = static::BoxClass::parseSequence($bytes);
 	}
 
 	/**
@@ -832,7 +845,7 @@ class BMFFFile extends ImageFile
 				break;
 			}
 		}
-		$replacement = $payload === null ? null : BMFFFileBox::uuidBox($userType, $payload);
+		$replacement = $payload === null ? null : static::BoxClass::uuidBox($userType, $payload);
 		if ($index === null) {
 			if ($replacement !== null && !$this->placeInFreeSpace($replacement)) {
 				$this->_boxes[] = $replacement;   // the end is past every offset in the file
@@ -933,7 +946,7 @@ class BMFFFile extends ImageFile
 	 */
 	protected function freeBox(int $payload): BMFFFileBox
 	{
-		return new BMFFFileBox(self::FreeBox, str_repeat("\0", $payload));
+		return new (static::BoxClass)(self::FreeBox, str_repeat("\0", $payload));
 	}
 
 	/**
@@ -966,7 +979,7 @@ class BMFFFile extends ImageFile
 		$countWidth = $version === 0 ? 2 : 4;
 		$pos = 4 + $countWidth;
 		$items = [];
-		foreach (BMFFFileBox::parseBoxes(substr($payload, $pos)) as $entry) {
+		foreach (static::BoxClass::parseBoxes(substr($payload, $pos)) as $entry) {
 			if ($entry->getType() !== self::ItemInfoEntryBox) {
 				continue;
 			}
@@ -995,7 +1008,7 @@ class BMFFFile extends ImageFile
 			? (int) unpack('n', substr($payload, 4, 2))[1]
 			: (int) unpack('N', substr($payload, 4, 4))[1];
 		$pos = 4 + $idWidth + 2;
-		$item = new BMFFItem($id, substr($payload, $pos, 4));
+		$item = new (static::ItemClass)($id, substr($payload, $pos, 4));
 		$pos += 4;
 		$item->setName($this->readCString($payload, $pos));
 		if ($item->getType() === BMFFItem::MimeType) {
@@ -1233,7 +1246,7 @@ class BMFFFile extends ImageFile
 		}
 		$udta = $moov->getChild(self::UserDataBox);
 		if ($udta === null) {
-			$udta = new BMFFFileBox(self::UserDataBox);
+			$udta = new (static::BoxClass)(self::UserDataBox);
 			$udta->setChildren([]);
 			$moov->addChild($udta);
 		}
@@ -1251,13 +1264,13 @@ class BMFFFile extends ImageFile
 		$udta = $this->requireUserDataBox();
 		$meta = $udta->getChild(self::MetaBox);
 		if ($meta === null) {
-			$meta = new BMFFFileBox(self::MetaBox);
-			$meta->setChildren([new BMFFFileBox(self::HandlerBox, str_repeat("\0", 8) . 'mdir' . 'appl' . str_repeat("\0", 9))]);
+			$meta = new (static::BoxClass)(self::MetaBox);
+			$meta->setChildren([new (static::BoxClass)(self::HandlerBox, str_repeat("\0", 8) . 'mdir' . 'appl' . str_repeat("\0", 9))]);
 			$udta->addChild($meta);
 		}
 		$ilst = $meta->getChild(self::ItemListBox);
 		if ($ilst === null) {
-			$ilst = new BMFFFileBox(self::ItemListBox);
+			$ilst = new (static::BoxClass)(self::ItemListBox);
 			$ilst->setChildren([]);
 			$meta->addChild($ilst);
 		}
@@ -1286,7 +1299,7 @@ class BMFFFile extends ImageFile
 			return;
 		}
 		if (!$this->holdMediaInPlace($delta)) {
-			$this->setBoxes(BMFFFileBox::parseBoxes($before));   // undo rather than corrupt
+			$this->setBoxes(static::BoxClass::parseBoxes($before));   // undo rather than corrupt
 			throw new \RuntimeException(sprintf('Changing the movie box by %d bytes would move the media, and no free-space box can absorb it.', $delta));
 		}
 		$this->_items = null;
@@ -1388,13 +1401,13 @@ class BMFFFile extends ImageFile
 		}
 		$iprp = $meta->getChild(self::ItemPropertiesBox);
 		if ($iprp === null) {
-			$iprp = new BMFFFileBox(self::ItemPropertiesBox);
+			$iprp = new (static::BoxClass)(self::ItemPropertiesBox);
 			$iprp->setChildren([]);
 			$meta->addChild($iprp);
 		}
 		$ipco = $iprp->getChild(self::ItemPropertyContainerBox);
 		if ($ipco === null) {
-			$ipco = new BMFFFileBox(self::ItemPropertyContainerBox);
+			$ipco = new (static::BoxClass)(self::ItemPropertyContainerBox);
 			$ipco->setChildren([]);
 			$iprp->addChild($ipco);
 		}
@@ -1468,7 +1481,7 @@ class BMFFFile extends ImageFile
 		if ($this->tradeColourIntoPadding($ipco, $colr, $profile, $was) && strlen($meta->toBinary()) === $was) {
 			return true;
 		}
-		$this->setBoxes(BMFFFileBox::parseBoxes($before));
+		$this->setBoxes(static::BoxClass::parseBoxes($before));
 		return false;
 	}
 
@@ -1495,7 +1508,7 @@ class BMFFFile extends ImageFile
 			if ($this->trailingFreeProperty($ipco) !== null) {
 				$at--;   // keep the padding last, so no real property changes index
 			}
-			array_splice($children, $at, 0, [new BMFFFileBox(self::ColourBox, self::ColourTypeProfile . $profile)]);
+			array_splice($children, $at, 0, [new (static::BoxClass)(self::ColourBox, self::ColourTypeProfile . $profile)]);
 			$ipco->setChildren($children);
 			$this->associateProperty($this->requireProperties()[0], $item, $at + 1);
 		}
@@ -1585,7 +1598,7 @@ class BMFFFile extends ImageFile
 	{
 		$ipma = $iprp->getChild(self::ItemPropertyAssociationBox);
 		if ($ipma === null) {
-			$ipma = new BMFFFileBox(self::ItemPropertyAssociationBox, pack('N', 0) . pack('N', 0));
+			$ipma = new (static::BoxClass)(self::ItemPropertyAssociationBox, pack('N', 0) . pack('N', 0));
 			$iprp->addChild($ipma);
 		}
 		[$version, $flags, $entries] = $this->readAssociations($ipma->getPayload());
@@ -1686,7 +1699,7 @@ class BMFFFile extends ImageFile
 				$this->shiftItemLocations($delta);
 			}
 		} catch (\RuntimeException $e) {
-			$this->setBoxes(BMFFFileBox::parseBoxes($before));   // undo rather than half-edit
+			$this->setBoxes(static::BoxClass::parseBoxes($before));   // undo rather than half-edit
 			throw $e;
 		}
 		$this->_items = null;
@@ -1754,11 +1767,11 @@ class BMFFFile extends ImageFile
 		if ($type === BMFFItem::MimeType) {
 			$body .= $contentType . "\0";
 		}
-		$entry = (new BMFFFileBox(self::ItemInfoEntryBox, chr(2) . "\x00\x00\x00" . $body))->toBinary();
+		$entry = (new (static::BoxClass)(self::ItemInfoEntryBox, chr(2) . "\x00\x00\x00" . $body))->toBinary();
 
 		$iinf = $meta->getChild(self::ItemInfoBox);
 		if ($iinf === null) {
-			$meta->addChild(new BMFFFileBox(self::ItemInfoBox, chr(0) . "\x00\x00\x00" . pack('n', 1) . $entry));
+			$meta->addChild(new (static::BoxClass)(self::ItemInfoBox, chr(0) . "\x00\x00\x00" . pack('n', 1) . $entry));
 			return;
 		}
 		// A table too short to hold its version and count is padded out rather than special
@@ -1785,7 +1798,7 @@ class BMFFFile extends ImageFile
 		$iloc = $meta->getChild(self::ItemLocationBox);
 		if ($iloc === null) {
 			// offset_size 4, length_size 4, base_offset_size 0: the address rides the extent.
-			$iloc = new BMFFFileBox(self::ItemLocationBox, chr(0) . "\x00\x00\x00" . chr(0x44) . chr(0x00) . pack('n', 0));
+			$iloc = new (static::BoxClass)(self::ItemLocationBox, chr(0) . "\x00\x00\x00" . chr(0x44) . chr(0x00) . pack('n', 0));
 			$meta->addChild($iloc);
 		}
 		$payload = $iloc->getPayload();
@@ -1822,12 +1835,12 @@ class BMFFFile extends ImageFile
 	{
 		$iref = $meta->getChild(self::ItemReferenceBox);
 		if ($iref === null) {
-			$iref = new BMFFFileBox(self::ItemReferenceBox);
+			$iref = new (static::BoxClass)(self::ItemReferenceBox);
 			$iref->setChildren([]);
 			$meta->addChild($iref);
 		}
 		$wide = ord(str_pad($iref->getFullBoxHeader(), 1, "\0")) >= 1;   // version 1 widens the ids
 		$body = ($wide ? pack('N', $from) : pack('n', $from)) . pack('n', 1) . ($wide ? pack('N', $to) : pack('n', $to));
-		$iref->addChild(new BMFFFileBox(self::ContentDescribes, $body));
+		$iref->addChild(new (static::BoxClass)(self::ContentDescribes, $body));
 	}
 }

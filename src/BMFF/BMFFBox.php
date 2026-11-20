@@ -431,25 +431,38 @@ class BMFFBox
 	 */
 	public function toBinary(): string
 	{
-		$payload = $this->_payload;
+		return implode('', $this->toParts());
+	}
+
+	/**
+	 * Returns the box as the run of byte strings that, joined, are {@see toBinary()}: its
+	 * header, then its payload or the parts of each child.  Nothing is joined on the way,
+	 * so whoever writes a file of boxes holds a large payload once more, not once for
+	 * every box it is nested in.
+	 * @return string[] The parts, in order.
+	 */
+	public function toParts(): array
+	{
+		$parts = [$this->_payload];
 		if ($this->getIsContainer()) {
 			// A FullBox container always writes its version and flags, even one built from
 			// nothing: without them a re-read takes the first four bytes of the first child
 			// for the header and loses a box.
-			$payload = str_pad($this->_fullBoxHeader, static::fullBoxHeaderLength($this->_type), "\0");
+			$parts = [str_pad($this->_fullBoxHeader, static::fullBoxHeaderLength($this->_type), "\0")];
 			foreach ($this->_children as $child) {
-				$payload .= $child->toBinary();
+				array_push($parts, ...$child->toParts());
 			}
-			$payload .= $this->_remainder;
+			$parts[] = $this->_remainder;
 		}
+		$payload = array_sum(array_map('strlen', $parts));
 		if ($this->_isSizeToEnd) {
-			return pack('N', 0) . $this->_type . $payload;
+			return [pack('N', 0) . $this->_type, ...$parts];
 		}
-		$length = 8 + strlen($payload);
+		$length = 8 + $payload;
 		if ($this->_usesLargeSize || $length > 0xFFFFFFFF) {
-			$length = 16 + strlen($payload);
-			return pack('N', 1) . $this->_type . pack('NN', $length >> 32, $length & 0xFFFFFFFF) . $payload;
+			$length = 16 + $payload;
+			return [pack('N', 1) . $this->_type . pack('NN', $length >> 32, $length & 0xFFFFFFFF), ...$parts];
 		}
-		return pack('N', $length) . $this->_type . $payload;
+		return [pack('N', $length) . $this->_type, ...$parts];
 	}
 }

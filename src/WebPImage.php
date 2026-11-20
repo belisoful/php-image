@@ -38,6 +38,18 @@ use Belisoful\Image\Stream\StreamIO;
  */
 class WebPImage extends ImageFile
 {
+	/**
+	 * @var class-string<ImageChunk> The class created for chunks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ChunkClass = ImageChunk::class;
+
+	/**
+	 * @var class-string<RIFFContainer> The class created for RIFF containers.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const RiffClass = RIFFContainer::class;
+
 	/** The VP8X flag bit marking an XMP chunk present. */
 	public const Vp8xXmpFlag = 0x04;
 
@@ -132,7 +144,7 @@ class WebPImage extends ImageFile
 			return;
 		}
 		$this->ensureVp8x();
-		$this->_riff->setChunkInOrder(new ImageChunk($id, strlen($data), 0, $data), self::ChunkOrder);
+		$this->_riff->setChunkInOrder(new (static::ChunkClass)($id, strlen($data), 0, $data), self::ChunkOrder);
 		$this->setVp8xFlag($flag, true);
 	}
 
@@ -146,7 +158,7 @@ class WebPImage extends ImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = \Belisoful\Image\Meta\XMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -171,7 +183,7 @@ class WebPImage extends ImageFile
 			return null;
 		}
 		try {
-			$exif = \Belisoful\Image\Meta\EXIF::fromTiffString($data);
+			$exif = static::ExifClass::fromTiffString($data);
 		} catch (\RuntimeException $e) {
 			return null;
 		}
@@ -243,7 +255,7 @@ class WebPImage extends ImageFile
 	 */
 	public function getImage(?string $mode = null): false|\GdImage|\Imagick
 	{
-		return ImageGraphics::decode($this->getBytesDirect(), $mode);
+		return static::GraphicsClass::decode($this->getBytesDirect(), $mode);
 	}
 
 	/**
@@ -255,9 +267,9 @@ class WebPImage extends ImageFile
 	 */
 	public function setImage(\GdImage|\Imagick $image, int $quality = 80): void
 	{
-		$bytes = ImageGraphics::encode($image, ImageGraphicsLibraryInterface::FormatWebP, $quality);
+		$bytes = static::GraphicsClass::encode($image, ImageGraphicsLibraryInterface::FormatWebP, $quality);
 		if ($bytes === false) {
-			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write WebP.', ImageGraphics::getModeOf($image)));
+			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write WebP.', static::GraphicsClass::getModeOf($image)));
 		}
 		$carried = [];
 		foreach (self::MetaChunkFlags as $id => $flag) {
@@ -282,9 +294,9 @@ class WebPImage extends ImageFile
 	 */
 	public static function fromImage(\GdImage|\Imagick $image, int $quality = 80): static
 	{
-		$bytes = ImageGraphics::encode($image, ImageGraphicsLibraryInterface::FormatWebP, $quality);
+		$bytes = static::GraphicsClass::encode($image, ImageGraphicsLibraryInterface::FormatWebP, $quality);
 		if ($bytes === false) {
-			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write WebP.', ImageGraphics::getModeOf($image)));
+			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write WebP.', static::GraphicsClass::getModeOf($image)));
 		}
 		return static::fromString($bytes);
 	}
@@ -303,7 +315,7 @@ class WebPImage extends ImageFile
 		$payload = "\x00\x00\x00\x00"
 			. substr(pack('V', $width - 1), 0, 3)
 			. substr(pack('V', $height - 1), 0, 3);
-		$this->_riff->prependChunk(new ImageChunk(RIFFChunkType::Vp8Extended, strlen($payload), 0, $payload));
+		$this->_riff->prependChunk(new (static::ChunkClass)(RIFFChunkType::Vp8Extended, strlen($payload), 0, $payload));
 	}
 
 	/**
@@ -347,7 +359,7 @@ class WebPImage extends ImageFile
 	public static function fromStreamLazy(mixed $stream): static
 	{
 		StreamIO::rewind($stream);
-		$riff = RIFFContainer::fromStreamLazy($stream, [RIFFChunkType::Vp8, RIFFChunkType::Vp8Lossless, RIFFChunkType::AnimationFrame, RIFFChunkType::Alpha]);
+		$riff = static::RiffClass::fromStreamLazy($stream, [RIFFChunkType::Vp8, RIFFChunkType::Vp8Lossless, RIFFChunkType::AnimationFrame, RIFFChunkType::Alpha]);
 		if ($riff->getFormType() !== 'WEBP') {
 			throw new \UnexpectedValueException(sprintf('WebP data is invalid: %s.', 'RIFF form type is not WEBP'));
 		}
@@ -396,7 +408,7 @@ class WebPImage extends ImageFile
 	 */
 	protected function parse(): void
 	{
-		$riff = RIFFContainer::fromString($this->getBytesDirect());
+		$riff = static::RiffClass::fromString($this->getBytesDirect());
 		if ($riff->getFormType() !== 'WEBP') {
 			throw new \UnexpectedValueException(sprintf('WebP data is invalid: %s.', 'RIFF form type is not WEBP'));
 		}

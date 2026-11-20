@@ -44,6 +44,12 @@ use Belisoful\Image\BMFF\BMFFBox;
  */
 class JUMBFBox extends BMFFBox
 {
+	/**
+	 * @var class-string<JUMBFDescription> The class created for JUMBF description boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const DescriptionClass = JUMBFDescription::class;
+
 	/** The superbox type, whose payload is a sequence of child boxes. */
 	public const SuperBox = 'jumb';
 
@@ -106,7 +112,7 @@ class JUMBFBox extends BMFFBox
 	public static function xml(string $label, string $xml): static
 	{
 		return static::superBox(
-			new JUMBFDescription(JUMBFDescription::XmlUuid, $label),
+			new (static::DescriptionClass)(JUMBFDescription::XmlUuid, $label),
 			[new static(self::XmlBox, $xml)],
 		);
 	}
@@ -120,7 +126,7 @@ class JUMBFBox extends BMFFBox
 	public static function json(string $label, string $json): static
 	{
 		return static::superBox(
-			new JUMBFDescription(JUMBFDescription::JsonUuid, $label),
+			new (static::DescriptionClass)(JUMBFDescription::JsonUuid, $label),
 			[new static(self::JsonBox, $json)],
 		);
 	}
@@ -137,7 +143,7 @@ class JUMBFBox extends BMFFBox
 	public static function exifAnnotation(string $label, string $data, string $contentType = self::XmlBox): static
 	{
 		return static::superBox(
-			new JUMBFDescription(JUMBFDescription::ExifUuid, $label),
+			new (static::DescriptionClass)(JUMBFDescription::ExifUuid, $label),
 			[new static($contentType, $data)],
 		);
 	}
@@ -160,7 +166,7 @@ class JUMBFBox extends BMFFBox
 	{
 		foreach ($this->getChildren() as $child) {
 			if ($child->getType() === self::DescriptionBox) {
-				$description = JUMBFDescription::parse($child->getPayload());
+				$description = static::DescriptionClass::parse($child->getPayload());
 				return $description === false ? null : $description;
 			}
 		}

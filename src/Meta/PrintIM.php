@@ -23,6 +23,7 @@ namespace Belisoful\Image\Meta;
  * cameras write after the version; {@see toBinary()} re-packs the block.
  *
  * @author Brad Anderson <belisoful@icloud.com>
+ * @phpstan-consistent-constructor
  */
 class PrintIM
 {
@@ -54,14 +55,14 @@ class PrintIM
 	 * Parses a PrintIM block.
 	 * @param string $data The block bytes.
 	 * @param bool $bigEndian The byte order of the surrounding EXIF block. Default true.
-	 * @return false|PrintIM The parsed block, or false when the signature is absent.
+	 * @return false|static The parsed block, or false when the signature is absent.
 	 */
-	public static function parse(string $data, bool $bigEndian = true): false|PrintIM
+	public static function parse(string $data, bool $bigEndian = true): false|static
 	{
 		if (!self::isPIM($data)) {
 			return false;
 		}
-		$pim = new self();
+		$pim = new static();
 		$pim->_bigEndian = $bigEndian;
 		$len = strlen($data);
 		$versionEnd = strpos($data, "\0", 8);
@@ -105,9 +106,9 @@ class PrintIM
 	 * current position to the end.
 	 * @param mixed $stream The {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
 	 * @param bool $bigEndian The byte order of the surrounding EXIF block. Default true.
-	 * @return false|PrintIM The parsed block, or false when the signature is absent.
+	 * @return false|static The parsed block, or false when the signature is absent.
 	 */
-	public static function fromStream(mixed $stream, bool $bigEndian = true): false|PrintIM
+	public static function fromStream(mixed $stream, bool $bigEndian = true): false|static
 	{
 		return static::parse(static::sourceBytes($stream), $bigEndian);
 	}

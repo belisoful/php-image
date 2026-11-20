@@ -24,6 +24,12 @@ namespace Belisoful\Image\TIFF;
  */
 class TIFFIfd implements \IteratorAggregate, \Countable
 {
+	/**
+	 * @var class-string<TIFFTag> The class created for TIFF fields.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const TagClass = TIFFTag::class;
+
 	/** @var array<int, TIFFTag> The fields, keyed by tag id. */
 	private array $_tags = [];
 
@@ -66,7 +72,7 @@ class TIFFIfd implements \IteratorAggregate, \Countable
 	 */
 	public function setTagValues(int $id, int $type, array|string $values): TIFFTag
 	{
-		$tag = new TIFFTag($id, $type, $values);
+		$tag = new (static::TagClass)($id, $type, $values);
 		$this->setTag($tag);
 		return $tag;
 	}

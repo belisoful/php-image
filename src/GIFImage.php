@@ -57,6 +57,18 @@ use Belisoful\Image\Stream\StreamIO;
  */
 class GIFImage extends ImageFile
 {
+	/**
+	 * @var class-string<GIFExtension> The class created for extension blocks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ExtensionClass = GIFExtension::class;
+
+	/**
+	 * @var class-string<GIFFrame> The class created for frames.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const FrameClass = GIFFrame::class;
+
 	/** @var string The 1987 version signature. */
 	public const Signature87a = 'GIF87a';
 
@@ -366,7 +378,7 @@ class GIFImage extends ImageFile
 	 */
 	public function addComment(string $text): void
 	{
-		$this->_blocks[] = GIFExtension::comment($text);
+		$this->_blocks[] = static::ExtensionClass::comment($text);
 	}
 
 	/**
@@ -456,7 +468,7 @@ class GIFImage extends ImageFile
 			$existing->setSubBlocks([self::NetscapeIdentity, $data]);
 			return;
 		}
-		$extension = GIFExtension::application(self::NetscapeIdentity, $data);
+		$extension = static::ExtensionClass::application(self::NetscapeIdentity, $data);
 		// The loop block belongs before the first frame.
 		$at = count($this->_blocks);
 		foreach ($this->_blocks as $index => $block) {
@@ -522,13 +534,13 @@ class GIFImage extends ImageFile
 	 */
 	public function setImage(\GdImage|\Imagick $image): void
 	{
-		[$width, $height] = ImageGraphics::getSize($image);
-		[$palette, $pixels] = ImageGraphics::paletteQuantize($image);
+		[$width, $height] = static::GraphicsClass::getSize($image);
+		[$palette, $pixels] = static::GraphicsClass::paletteQuantize($image);
 
 		$this->setScreenSize($width, $height);
 		$this->setGlobalColorTable($palette);
 
-		$frame = new GIFFrame();
+		$frame = new (static::FrameClass)();
 		$frame->setWidth($width);
 		$frame->setHeight($height);
 		$frame->setMinCodeSize(GIFFrame::minCodeSizeFor($palette));
@@ -565,7 +577,7 @@ class GIFImage extends ImageFile
 	{
 		$this->replaceApplicationExtension(
 			self::XmpIdentity,
-			$xmp === null ? null : GIFExtension::rawApplication(self::XmpIdentity, $xmp),
+			$xmp === null ? null : static::ExtensionClass::rawApplication(self::XmpIdentity, $xmp),
 		);
 	}
 
@@ -579,7 +591,7 @@ class GIFImage extends ImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = \Belisoful\Image\Meta\XMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -611,7 +623,7 @@ class GIFImage extends ImageFile
 	{
 		$this->replaceApplicationExtension(
 			self::ICCIdentity,
-			$profile === null ? null : GIFExtension::application(self::ICCIdentity, $profile),
+			$profile === null ? null : static::ExtensionClass::application(self::ICCIdentity, $profile),
 		);
 	}
 
@@ -678,11 +690,11 @@ class GIFImage extends ImageFile
 	 */
 	public static function fromImage(\GdImage|\Imagick $image): static
 	{
-		[$width, $height] = ImageGraphics::getSize($image);
-		[$palette, $pixels] = ImageGraphics::paletteQuantize($image);
+		[$width, $height] = static::GraphicsClass::getSize($image);
+		[$palette, $pixels] = static::GraphicsClass::paletteQuantize($image);
 
 		$gif = static::fromString(static::blankBytes($width, $height, $palette));
-		$frame = new GIFFrame();
+		$frame = new (static::FrameClass)();
 		$frame->setWidth($width);
 		$frame->setHeight($height);
 		$frame->setMinCodeSize(GIFFrame::minCodeSizeFor($palette));
@@ -799,7 +811,7 @@ class GIFImage extends ImageFile
 			];
 			return $i;
 		}
-		$this->_blocks[] = new GIFExtension($label, $subBlocks);
+		$this->_blocks[] = new (static::ExtensionClass)($label, $subBlocks);
 		return $i;
 	}
 
@@ -820,7 +832,7 @@ class GIFImage extends ImageFile
 			throw new \UnexpectedValueException(sprintf('GIF data is invalid: %s.', 'an image descriptor is truncated'));
 		}
 		$this->countPart();
-		$frame = new GIFFrame();
+		$frame = new (static::FrameClass)();
 		$d = unpack('vleft/vtop/vwidth/vheight', substr($bytes, $i + 1, 8));
 		$frame->setLeft($d['left']);
 		$frame->setTop($d['top']);
@@ -892,7 +904,7 @@ class GIFImage extends ImageFile
 		if ($trailer === false) {
 			return null;
 		}
-		$extension = GIFExtension::rawApplication($identity, substr($bytes, $start, $trailer - $start));
+		$extension = static::ExtensionClass::rawApplication($identity, substr($bytes, $start, $trailer - $start));
 		$i = $trailer + strlen(GIFExtension::MagicTrailer);
 		return $extension;
 	}
@@ -938,11 +950,17 @@ class GIFImage extends ImageFile
 	 */
 	protected function compose(): string
 	{
-		$out = $this->headerBytes();
+		// Gathered and joined once: a frame's sub-blocks go from where they are held straight
+		// into the file, without the frame being built as a string of its own on the way.
+		$parts = [$this->headerBytes()];
 		foreach ($this->_blocks as $block) {
-			$out .= $block->toBinary();
+			foreach ($block->toParts() as $part) {
+				$parts[] = $part;
+			}
 		}
-		return $out . chr(GIFBlockType::Trailer) . $this->_trailingBytes;
+		$parts[] = chr(GIFBlockType::Trailer);
+		$parts[] = $this->_trailingBytes;
+		return implode('', $parts);
 	}
 
 	/**
@@ -1041,7 +1059,7 @@ class GIFImage extends ImageFile
 	 */
 	private function parseFrameStream(BinaryReader $binary, mixed $stream, ?array $pending): void
 	{
-		$frame = new GIFFrame();
+		$frame = new (static::FrameClass)();
 		$descriptor = $binary->readBytes(9);   // 8 geometry bytes + 1 packed byte
 		$d = unpack('vleft/vtop/vwidth/vheight', substr($descriptor, 0, 8));
 		$frame->setLeft($d['left']);

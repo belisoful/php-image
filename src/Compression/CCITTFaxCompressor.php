@@ -34,6 +34,7 @@ use Belisoful\Image\Util\BitWriter;
  * ```
  *
  * @author Brad Anderson <belisoful@icloud.com>
+ * @phpstan-consistent-constructor
  */
 class CCITTFaxCompressor implements CompressorInterface
 {
@@ -168,7 +169,7 @@ class CCITTFaxCompressor implements CompressorInterface
 	 */
 	public static function compress(string $data, int $columns = 1728, int $mode = self::Group4): string
 	{
-		return (new self($columns, $mode))->encode($data);
+		return (new static($columns, $mode))->encode($data);
 	}
 
 	/**
@@ -181,7 +182,7 @@ class CCITTFaxCompressor implements CompressorInterface
 	 */
 	public static function decompress(string $data, int $columns = 1728, int $mode = self::Group4, ?int $rows = null): string
 	{
-		return (new self($columns, $mode))->decode($data, $rows);
+		return (new static($columns, $mode))->decode($data, $rows);
 	}
 
 	/**

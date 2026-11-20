@@ -35,9 +35,16 @@ use Psr\Http\Message\StreamInterface;
  *
  * @author Brad Anderson <belisoful@icloud.com>
  * @see https://www.w3.org/Graphics/JPEG/jfif3.pdf Official standard
+ * @phpstan-consistent-constructor
  */
 class JFXX
 {
+	/**
+	 * @var class-string<ImageGraphics> The graphics facade this class draws through.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const GraphicsClass = ImageGraphics::class;
+
 	public const IDENTIFIER = "JFXX\0";
 
 	public const JPEG_THUMB = 0x10;
@@ -86,7 +93,7 @@ class JFXX
 		if (strlen($bytes) < 6 || !self::isJFXX($bytes)) {
 			return false;
 		}
-		$jfxx = new JFXX();
+		$jfxx = new static();
 		$jfxx->_format = ord($bytes[5]);
 		if ($jfxx->_format === self::JPEG_THUMB) {
 			$jfxx->setThumbnail(substr($bytes, 6), true);
@@ -235,19 +242,19 @@ class JFXX
 		}
 		$format = $this->getFormat();
 		if ($format === self::JPEG_THUMB) {
-			$image = ImageGraphics::decode((string) $this->getThumbnail(), $mode);
+			$image = static::GraphicsClass::decode((string) $this->getThumbnail(), $mode);
 			if ($image === false) {
 				return false;
 			}
-			[$sx, $sy] = ImageGraphics::getSize($image);
+			[$sx, $sy] = static::GraphicsClass::getSize($image);
 			$this->setXThumbnail($sx);
 			$this->setYThumbnail($sy);
 			return $image;
 		}
 		if ($format === self::PALETTE_THUMB) {
-			return ImageGraphics::fromRgbPixels($this->paletteRgbPixels(), $this->getXThumbnail(), $this->getYThumbnail(), $mode);
+			return static::GraphicsClass::fromRgbPixels($this->paletteRgbPixels(), $this->getXThumbnail(), $this->getYThumbnail(), $mode);
 		}
-		return ImageGraphics::fromRgbPixels((string) $this->getThumbnail(), $this->getXThumbnail(), $this->getYThumbnail(), $mode);
+		return static::GraphicsClass::fromRgbPixels((string) $this->getThumbnail(), $this->getXThumbnail(), $this->getYThumbnail(), $mode);
 	}
 
 	/**
@@ -271,14 +278,14 @@ class JFXX
 		if (!in_array($format, [self::JPEG_THUMB, self::PALETTE_THUMB, self::COLOR_THUMB, self::EFFICIENCY_THUMB], true)) {
 			return false;
 		}
-		[$sx, $sy] = ImageGraphics::getSize($image);
+		[$sx, $sy] = static::GraphicsClass::getSize($image);
 		if ($sx > 255 || $sy > 255) {
 			throw new \InvalidArgumentException(sprintf('JFXX thumbnail of %sx%s pixels exceeds the 255x255 limit.', $sx, $sy));
 		}
 
 		$jpeg = null;
 		if ($format === self::EFFICIENCY_THUMB) {
-			$jpeg = ImageGraphics::encodeJpeg($image, $quality);
+			$jpeg = static::GraphicsClass::encodeJpeg($image, $quality);
 			$colorSize = $sx * $sy * 3;
 			$paletteSize = self::PALETTE_SIZE + $sx * $sy;
 			$format = $paletteSize < $colorSize ? self::PALETTE_THUMB : self::COLOR_THUMB;
@@ -290,14 +297,14 @@ class JFXX
 		$this->setYThumbnail($sy);
 		if ($format === self::COLOR_THUMB) {
 			$this->setPalette(null);
-			$this->setThumbnail(ImageGraphics::rgbPixels($image));
+			$this->setThumbnail(static::GraphicsClass::rgbPixels($image));
 		} elseif ($format === self::PALETTE_THUMB) {
-			[$palette, $pixels] = ImageGraphics::paletteQuantize($image);
+			[$palette, $pixels] = static::GraphicsClass::paletteQuantize($image);
 			$this->setPalette($palette);
 			$this->setThumbnail($pixels);
 		} else {
 			$this->setPalette(null);
-			$this->setThumbnail($jpeg ?? ImageGraphics::encodeJpeg($image, $quality));
+			$this->setThumbnail($jpeg ?? static::GraphicsClass::encodeJpeg($image, $quality));
 		}
 		return true;
 	}

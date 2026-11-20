@@ -35,6 +35,12 @@ namespace Belisoful\Image;
 class RIFFList extends ImageChunk
 {
 	/**
+	 * @var class-string<RIFFContainer> The container whose chunks this list's children are read as.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const RiffClass = RIFFContainer::class;
+
+	/**
 	 * The deepest list nesting the walker follows.  Beyond it a `LIST` is kept as a plain
 	 * {@see ImageChunk}, so a cyclic or hostile file cannot recurse without bound.
 	 */
@@ -149,7 +155,7 @@ class RIFFList extends ImageChunk
 			$payload = parent::getData();
 			$this->_listType = substr($payload, 0, 4);
 			$this->_partBytes ??= strlen($payload);
-			[$this->_children, $this->_remainder] = RIFFContainer::parseChunks($payload, 4, strlen($payload), $this->getOffset(), $this->_depth + 1, $this->_bigEndian, [], $this->_partCount, $this->_partBytes);
+			[$this->_children, $this->_remainder] = static::RiffClass::parseChunks($payload, 4, strlen($payload), $this->getOffset(), $this->_depth + 1, $this->_bigEndian, [], $this->_partCount, $this->_partBytes);
 		}
 		return $this->_children;
 	}
@@ -246,15 +252,15 @@ class RIFFList extends ImageChunk
 		if ($this->_children === null) {
 			return parent::getData();
 		}
-		$body = $this->_listType;
+		$parts = [$this->_listType];
 		foreach ($this->_children as $chunk) {
 			$data = $chunk->getData();
-			$body .= $chunk->getType() . RIFFContainer::packSize(strlen($data), $this->_bigEndian) . $data;
-			if (strlen($data) & 1) {
-				$body .= "\0"; // pad to an even length
-			}
+			$parts[] = $chunk->getType() . RIFFContainer::packSize(strlen($data), $this->_bigEndian);
+			$parts[] = $data;
+			$parts[] = str_repeat("\0", strlen($data) & 1);   // pad to an even length
 		}
-		return $body . $this->_remainder;
+		$parts[] = $this->_remainder;
+		return implode('', $parts);
 	}
 
 	/**

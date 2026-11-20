@@ -46,6 +46,36 @@ use Belisoful\Image\PhotoshopResource;
  */
 class PhotoshopFileInfo implements \ArrayAccess
 {
+	/**
+	 * @var class-string<EXIF> The class created for EXIF metadata.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ExifClass = EXIF::class;
+
+	/**
+	 * @var class-string<IPTC> The class created for IPTC record sets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IptcClass = IPTC::class;
+
+	/**
+	 * @var class-string<PhotoshopIRB> The class created for Photoshop resource blocks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IrbClass = PhotoshopIRB::class;
+
+	/**
+	 * @var class-string<PhotoshopResource> The class created for Photoshop resources.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ResourceClass = PhotoshopResource::class;
+
+	/**
+	 * @var class-string<XMP> The class created for XMP packets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const XmpClass = XMP::class;
+
 	/** The unknown copyright status. */
 	public const CopyrightUnknown = 'Unknown';
 
@@ -235,10 +265,10 @@ class PhotoshopFileInfo implements \ArrayAccess
 	 */
 	public function applyTo(JPEGImage $jpeg): void
 	{
-		$exif = $jpeg->getEXIF() ?? new EXIF();
-		$xmp = $jpeg->getXMP() ?? XMP::blank();
-		$iptc = $jpeg->getIPTC() ?? new IPTC();
-		$irb = $jpeg->getPhotoshopIRB() ?? new PhotoshopIRB();
+		$exif = $jpeg->getEXIF() ?? new (static::ExifClass)();
+		$xmp = $jpeg->getXMP() ?? static::XmpClass::blank();
+		$iptc = $jpeg->getIPTC() ?? new (static::IptcClass)();
+		$irb = $jpeg->getPhotoshopIRB() ?? new (static::IrbClass)();
 
 		// IPTC datasets (in the IRB) with their length limits.
 		foreach (self::IptcMap as $field => [$tag, $limit]) {
@@ -297,7 +327,7 @@ class PhotoshopFileInfo implements \ArrayAccess
 
 		// IRB resources.
 		if ($status === self::Copyrighted || $status === self::PublicDomain) {
-			$irb->setResource(new PhotoshopResource(PhotoshopResource::CopyrightFlag, $status === self::Copyrighted ? "\x01" : "\x00"));
+			$irb->setResource(new (static::ResourceClass)(PhotoshopResource::CopyrightFlag, $status === self::Copyrighted ? "\x01" : "\x00"));
 		} else {
 			$irb->removeResource(PhotoshopResource::CopyrightFlag);
 		}
@@ -305,7 +335,7 @@ class PhotoshopFileInfo implements \ArrayAccess
 		if ($url === null) {
 			$irb->removeResource(PhotoshopResource::Url);
 		} else {
-			$irb->setResource(new PhotoshopResource(PhotoshopResource::Url, $url));
+			$irb->setResource(new (static::ResourceClass)(PhotoshopResource::Url, $url));
 		}
 		$iptc[IPTCTags::ApplicationRecordVersion] ??= 4;
 

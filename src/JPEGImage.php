@@ -20,6 +20,7 @@ use Belisoful\Image\Meta\XMP;
 use Belisoful\Image\Stream\BinaryReader;
 use Belisoful\Image\Stream\SourceRange;
 use Belisoful\Image\Stream\StreamIO;
+use Belisoful\Image\TIFF\TIFFDataType;
 
 /**
  * JPEGImage class.
@@ -50,6 +51,30 @@ use Belisoful\Image\Stream\StreamIO;
  */
 class JPEGImage extends ImageFile
 {
+	/**
+	 * @var class-string<JFIF> The class created for JFIF headers.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const JfifClass = JFIF::class;
+
+	/**
+	 * @var class-string<JFXX> The class created for JFXX extensions.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const JfxxClass = JFXX::class;
+
+	/**
+	 * @var class-string<JUMBFBox> The class created for JUMBF boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const JumbfBoxClass = JUMBFBox::class;
+
+	/**
+	 * @var class-string<PictureInfo> The class created for APP12 picture info.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const PictureInfoClass = PictureInfo::class;
+
 	/** @var int The byte that introduces every marker. */
 	public const MARKER_PREFIX = 0xFF;
 
@@ -191,6 +216,12 @@ class JPEGImage extends ImageFile
 	/** @var ?PhotoshopIRB The parsed Photoshop image resources (APP13), or null when absent. */
 	private ?PhotoshopIRB $_irb = null;
 
+	/**
+	 * @var ?bool Whether the extended XMP packet that was read is named by its MD5 digest,
+	 *   or null when the file held none.
+	 */
+	private ?bool $_extendedXmpDigestMatches = null;
+
 	/** @var string The preserved entropy-coded scan (from the SOS marker to the end). */
 	private string $_scan = '';
 
@@ -289,7 +320,7 @@ class JPEGImage extends ImageFile
 	 */
 	public function getImage(?string $mode = null): false|\GdImage|\Imagick
 	{
-		return ImageGraphics::decode($this->getBytesDirect(), $mode);
+		return static::GraphicsClass::decode($this->getBytesDirect(), $mode);
 	}
 
 	/**
@@ -306,9 +337,9 @@ class JPEGImage extends ImageFile
 	 */
 	public function setImage(\GdImage|\Imagick $image, int $quality = 75): void
 	{
-		$bytes = ImageGraphics::encode($image, ImageGraphicsLibraryInterface::FormatJpeg, $quality);
+		$bytes = static::GraphicsClass::encode($image, ImageGraphicsLibraryInterface::FormatJpeg, $quality);
 		if ($bytes === false) {
-			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write JPEG.', ImageGraphics::getModeOf($image)));
+			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write JPEG.', static::GraphicsClass::getModeOf($image)));
 		}
 		$fresh = static::fromString($bytes);
 		// A frame segment (the quantization and Huffman tables, the frame header, the
@@ -338,9 +369,9 @@ class JPEGImage extends ImageFile
 	 */
 	public static function fromImage(\GdImage|\Imagick $image, int $quality = 75): static
 	{
-		$bytes = ImageGraphics::encode($image, ImageGraphicsLibraryInterface::FormatJpeg, $quality);
+		$bytes = static::GraphicsClass::encode($image, ImageGraphicsLibraryInterface::FormatJpeg, $quality);
 		if ($bytes === false) {
-			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write JPEG.', ImageGraphics::getModeOf($image)));
+			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write JPEG.', static::GraphicsClass::getModeOf($image)));
 		}
 		return static::fromString($bytes);
 	}
@@ -489,7 +520,7 @@ class JPEGImage extends ImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = XMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -743,6 +774,40 @@ class JPEGImage extends ImageFile
 	 * @param int $types The {@see PrivacyCategory} flags to remove.
 	 * @return int The number of fields removed.
 	 */
+	/**
+	 * Reports an extended XMP packet whose digest is not the name it goes by.  The packet
+	 * is read all the same -- writers in the wild name them with digests of something
+	 * else -- so this is advice, and a rewrite names the packet by its own digest.
+	 * @param int $types The {@see ConformanceCategory} flags to report.
+	 * @return array<string, string> What is wrong, by field.
+	 */
+	protected function validateFormat(int $types): array
+	{
+		if (($types & ConformanceCategory::Advisory) && $this->_extendedXmpDigestMatches === false) {
+			return ['XMP xmpNote:HasExtendedXMP' => 'the extended packet is not named by its MD5 digest'];
+		}
+		return [];
+	}
+
+	/**
+	 * Adds the pixel dimensions Exif requires beside the other fields of the Exif
+	 * directory, which only the image can state.
+	 * @param int $types The {@see ConformanceCategory} flags to correct.
+	 * @return int The number of fields added.
+	 */
+	protected function conformFormat(int $types): int
+	{
+		$exif = $this->getEXIF()?->getExifIfd();
+		$added = 0;
+		foreach ([0xA002 => $this->getWidth(), 0xA003 => $this->getHeight()] as $id => $pixels) {
+			if (($types & ConformanceCategory::Required) && $exif !== null && $pixels !== null && $exif->getTag($id) === null) {
+				$exif->setTagValues($id, TIFFDataType::ULong, [$pixels]);
+				$added++;
+			}
+		}
+		return $added;
+	}
+
 	protected function clearFormatPrivateData(int $types): int
 	{
 		$removed = 0;
@@ -829,7 +894,7 @@ class JPEGImage extends ImageFile
 			$this->setICCProfileDirect(implode('', $chunks['icc']));
 		}
 		if ($chunks['irb'] !== []) {
-			$irb = PhotoshopIRB::parse(implode('', $chunks['irb']));
+			$irb = static::IrbClass::parse(implode('', $chunks['irb']));
 			if ($irb !== false) {
 				$this->setPhotoshopIRB($irb);
 				$this->setIptcDirect($irb->getIPTC());
@@ -976,10 +1041,11 @@ class JPEGImage extends ImageFile
 		}
 		ksort($parts);
 		$text = implode('', $parts);
-		$extended = strlen($text) === $total ? XMP::parse($text) : false;
+		$extended = strlen($text) === $total ? static::XmpClass::parse($text) : false;
 		if ($extended === false) {
 			return;
 		}
+		$this->_extendedXmpDigestMatches = strtoupper(md5($text)) === strtoupper($wanted);
 		$main->merge($extended);
 		$main->removeProperty(XMP::NS_NOTE, 'HasExtendedXMP');
 		$this->setXmpText($main->toPacketText());
@@ -1004,7 +1070,7 @@ class JPEGImage extends ImageFile
 		// Too large for one segment: the whole packet moves to the extension segments
 		// and the main packet keeps only the digest that links them.
 		$digest = strtoupper(md5($text));
-		$main = XMP::blank();
+		$main = static::XmpClass::blank();
 		$main->setProperty(XMP::NS_NOTE, 'HasExtendedXMP', $digest);
 		$out = $this->segmentBytes(self::APP1, self::XMP_IDENTIFIER . $main->toPacketText(false));
 
@@ -1043,7 +1109,7 @@ class JPEGImage extends ImageFile
 		$boxes = [];
 		foreach ($instances as $instance) {
 			ksort($instance['fragments']);
-			$box = JUMBFBox::parse($instance['header'] . implode('', $instance['fragments']));
+			$box = static::JumbfBoxClass::parse($instance['header'] . implode('', $instance['fragments']));
 			if ($box !== false) {
 				$boxes[] = $box;
 			}
@@ -1088,7 +1154,7 @@ class JPEGImage extends ImageFile
 		if ($marker === self::APP1 && !$this->hasSegmentKind('exif') && str_starts_with($payload, EXIF::ExifSignature)) {
 			// A malformed EXIF block is kept as a raw segment so the file still round-trips.
 			try {
-				$exif = EXIF::fromSegment($payload);
+				$exif = static::ExifClass::fromSegment($payload);
 			} catch (\RuntimeException $e) {
 				$exif = false;
 			}
@@ -1104,7 +1170,7 @@ class JPEGImage extends ImageFile
 			return;   // reassembled after the walk, then merged into the main packet
 		} elseif ($marker === self::APP3 && !$this->hasSegmentKind('meta') && str_starts_with($payload, EXIF::MetaSignature)) {
 			try {
-				$meta = EXIF::fromSegment($payload);
+				$meta = static::ExifClass::fromSegment($payload);
 			} catch (\RuntimeException $e) {
 				$meta = false;
 			}
@@ -1113,12 +1179,12 @@ class JPEGImage extends ImageFile
 			return;
 		}
 		if ($marker === self::APP0 && !$this->hasSegmentKind('jfif') && JFIF::isJFIF($payload)) {
-			$jfif = JFIF::parse($payload);
+			$jfif = static::JfifClass::parse($payload);
 			$this->setJFIF($jfif === false ? null : $jfif);
 			$this->addSegment($marker, 'jfif');
 			return;
 		} elseif ($marker === self::APP0 && !$this->hasSegmentKind('jfxx') && JFXX::isJFXX($payload)) {
-			$jfxx = JFXX::parse($payload);
+			$jfxx = static::JfxxClass::parse($payload);
 			$this->setJFXX($jfxx === false ? null : $jfxx);
 			$this->addSegment($marker, 'jfxx');
 			return;
@@ -1129,7 +1195,7 @@ class JPEGImage extends ImageFile
 			}
 			return;
 		} elseif ($marker === self::APP12 && !$this->hasSegmentKind('pictureinfo') && PictureInfo::isPictureInfo($payload)) {
-			$info = PictureInfo::parse($payload);
+			$info = static::PictureInfoClass::parse($payload);
 			$this->setPictureInfo($info === false ? null : $info);
 			$this->addSegment($marker, $info === false ? 'raw' : 'pictureinfo', $info === false ? $payload : '');
 			return;
@@ -1140,7 +1206,7 @@ class JPEGImage extends ImageFile
 			}
 			return;
 		} elseif ($marker === self::APP13 && !$this->hasSegmentKind('iptc') && $this->isIptc($payload)) {
-			$iptc = IPTC::parse($payload);
+			$iptc = static::IptcClass::parse($payload);
 			$this->setIptcDirect($iptc === false ? null : $iptc);
 			$this->addSegment($marker, 'iptc');
 			return;

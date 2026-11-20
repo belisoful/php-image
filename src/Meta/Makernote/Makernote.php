@@ -45,6 +45,25 @@ use Belisoful\Image\TIFF\TIFFIfd;
  */
 class Makernote
 {
+	/**
+	 * @var class-string<TIFFDocument> The class created for TIFF documents.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const TiffDocumentClass = TIFFDocument::class;
+
+	/**
+	 * @var array<string, class-string<Makernote>> The classes decoding the makers that have
+	 *   one of their own, by maker name.  A subclass names its own here; a class
+	 *   {@see registerMakerClass() registered} at run time comes first.
+	 */
+	public const MakerClasses = [
+		'Canon' => CanonMakernote::class,
+		'Konica Minolta' => KonicaMinoltaMakernote::class,
+	];
+
+	/** @var class-string<Makernote> The class decoding every other maker. */
+	public const GenericClass = self::class;
+
 	/** @var array<string, string> The maker => subclass registry for maker-specific decoding. */
 	private static array $_makerClasses = [];
 
@@ -93,11 +112,7 @@ class Makernote
 	 */
 	protected static function makerClass(string $maker): string
 	{
-		return self::$_makerClasses[$maker] ?? match ($maker) {
-			'Canon' => CanonMakernote::class,
-			'Konica Minolta' => KonicaMinoltaMakernote::class,
-			default => self::class,
-		};
+		return self::$_makerClasses[$maker] ?? static::MakerClasses[$maker] ?? static::GenericClass;
 	}
 
 	/**
@@ -232,13 +247,13 @@ class Makernote
 			'II' => false,
 			default => $bigEndian,
 		};
-		$reader = new TIFFDocument();
+		$reader = new (static::TiffDocumentClass)();
 		$reader->setIsBigEndian($order);
 
 		if ($variant['embeddedTiffHeader'] ?? false) {
 			// Nikon Type 3: a complete TIFF structure follows the signature.
 			try {
-				$inner = TIFFDocument::fromString(substr($note, $variant['signatureLength']), []);
+				$inner = static::TiffDocumentClass::fromString(substr($note, $variant['signatureLength']), []);
 				$inner->setIsBigEndian($inner->getIsBigEndian());
 				$this->_ifd = $inner->getIfd(0);
 				$this->_warnings = array_merge($this->_warnings, $inner->getWarnings());
@@ -287,7 +302,7 @@ class Makernote
 		$block = substr($bytes, $tag->getOffset(), $tag->getCount());
 		foreach ($spec['signatures'] as $signature) {
 			if (str_starts_with($block, $signature)) {
-				$reader = new TIFFDocument();
+				$reader = new (static::TiffDocumentClass)();
 				$reader->setIsBigEndian(($spec['byteOrder'] ?? 'MM') === 'MM');
 				[$sub] = $reader->readIfdAt($block, $spec['ifdOffset'], 0, $spec['hasNextIfdPointer'] ?? false);
 				if ($sub !== null) {

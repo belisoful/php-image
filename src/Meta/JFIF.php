@@ -31,9 +31,16 @@ use Psr\Http\Message\StreamInterface;
  *
  * @author Brad Anderson <belisoful@icloud.com>
  * @see https://www.w3.org/Graphics/JPEG/jfif3.pdf Official standard
+ * @phpstan-consistent-constructor
  */
 class JFIF
 {
+	/**
+	 * @var class-string<ImageGraphics> The graphics facade this class draws through.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const GraphicsClass = ImageGraphics::class;
+
 	public const IDENTIFIER = "JFIF\0";
 	public const JFXX_IDENTIFIER = "JFXX\0";
 	public const VERSION_11 = 1;
@@ -104,7 +111,7 @@ class JFIF
 			return false;
 		}
 		$fields = unpack('Cmaj/Cmin/Cunits/nxd/nyd/Csx/Csy', substr($bytes, 5, 9));
-		$jfif = new JFIF();
+		$jfif = new static();
 		$jfif->_versionMajor = $fields['maj'];
 		$jfif->_versionMinor = $fields['min'];
 		$jfif->_units = $fields['units'];
@@ -270,7 +277,7 @@ class JFIF
 		if (!$this->hasImage()) {
 			return false;
 		}
-		return ImageGraphics::fromRgbPixels($this->getThumbnail(), $this->getXThumbnail(), $this->getYThumbnail(), $mode);
+		return static::GraphicsClass::fromRgbPixels($this->getThumbnail(), $this->getXThumbnail(), $this->getYThumbnail(), $mode);
 	}
 
 	/**
@@ -284,13 +291,13 @@ class JFIF
 			$this->clearThumbnail();
 			return;
 		}
-		[$sx, $sy] = ImageGraphics::getSize($image);
+		[$sx, $sy] = static::GraphicsClass::getSize($image);
 		if ($sx > 255 || $sy > 255) {
 			throw new \InvalidArgumentException(sprintf('JFIF thumbnail of %sx%s pixels exceeds the 255x255 limit.', $sx, $sy));
 		}
 		$this->_xThumbnail = $sx;
 		$this->_yThumbnail = $sy;
-		$this->_thumbnail = ImageGraphics::rgbPixels($image);
+		$this->_thumbnail = static::GraphicsClass::rgbPixels($image);
 	}
 
 	/**

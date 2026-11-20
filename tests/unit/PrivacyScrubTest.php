@@ -273,7 +273,7 @@ class PrivacyScrubTest extends PHPUnit\Framework\TestCase
 		$iptc[IPTCTags::ServiceIdentifier] = 'SVC';
 		$iptc[IPTCTags::DateSent] = '20260101';
 		$iptc[IPTCTags::ImageOrientation] = 'L';
-		$bytes = $iptc->toBinary();   // validate() derives the envelope number, as any written record set has
+		$bytes = $iptc->toBinary();   // conform() derives the envelope number, as any written record set has
 		$iptc = IPTC::parse($bytes);
 		self::assertTrue($iptc->contains(IPTCTags::EnvelopeNumber));
 		self::assertSame(1, $iptc->clearPrivateData(PrivacyCategory::Timestamp), 'the date is replaced (its envelope number follows)');

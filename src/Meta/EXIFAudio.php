@@ -46,6 +46,18 @@ class EXIFAudio
 {
 	use StreamIOTrait;
 
+	/**
+	 * @var class-string<ImageChunk> The class created for chunks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ChunkClass = ImageChunk::class;
+
+	/**
+	 * @var class-string<RIFFContainer> The class created for RIFF containers.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const RiffClass = RIFFContainer::class;
+
 	/** The RIFF form type of a WAVE audio file. */
 	public const FormType = 'WAVE';
 
@@ -86,7 +98,7 @@ class EXIFAudio
 	final public function __construct(?RIFFContainer $riff = null)
 	{
 		if ($riff === null) {
-			$riff = new RIFFContainer();
+			$riff = new (static::RiffClass)();
 			$riff->setFormType(self::FormType);
 		}
 		$this->_riff = $riff;
@@ -125,7 +137,7 @@ class EXIFAudio
 	 */
 	public static function fromString(string $bytes): static
 	{
-		$riff = RIFFContainer::fromString($bytes);
+		$riff = static::RiffClass::fromString($bytes);
 		if ($riff->getFormType() !== self::FormType) {
 			throw new \UnexpectedValueException(sprintf('An Exif audio file must be a RIFF WAVE container; the form type is \'%s\'.', $riff->getFormType()));
 		}
@@ -476,7 +488,7 @@ class EXIFAudio
 			}
 		}
 		if ($list === null) {
-			$this->_riff->addChunk(new ImageChunk('LIST', strlen($data), 0, $data));
+			$this->_riff->addChunk(new (static::ChunkClass)('LIST', strlen($data), 0, $data));
 		} else {
 			$list->setData($data);
 		}

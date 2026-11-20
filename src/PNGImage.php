@@ -46,6 +46,18 @@ use Belisoful\Image\Stream\StreamIO;
  */
 class PNGImage extends ImageFile
 {
+	/**
+	 * @var class-string<ImageChunk> The class created for chunks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ChunkClass = ImageChunk::class;
+
+	/**
+	 * @var class-string<APNGFrame> The class created for frames.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const FrameClass = APNGFrame::class;
+
 	/** @var string The 8-byte PNG signature. */
 	public const Signature = "\x89PNG\r\n\x1a\n";
 
@@ -160,7 +172,7 @@ class PNGImage extends ImageFile
 			return;
 		}
 		$payload = self::XmpKeyword . "\0" . "\x00\x00" . "\0" . "\0" . $xmp;
-		$this->addChunk(new ImageChunk(PNGChunkType::InternationalText, strlen($payload), 0, $payload));
+		$this->addChunk(new (static::ChunkClass)(PNGChunkType::InternationalText, strlen($payload), 0, $payload));
 	}
 
 	/**
@@ -173,7 +185,7 @@ class PNGImage extends ImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = \Belisoful\Image\Meta\XMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -308,7 +320,7 @@ class PNGImage extends ImageFile
 			return;
 		}
 		$payload = self::ICCProfileName . "\x00" . "\x00" . $this->deflate($profile);
-		$this->setChunk(new ImageChunk(PNGChunkType::ICCProfile, strlen($payload), 0, $payload));
+		$this->setChunk(new (static::ChunkClass)(PNGChunkType::ICCProfile, strlen($payload), 0, $payload));
 	}
 
 	/**
@@ -323,7 +335,7 @@ class PNGImage extends ImageFile
 			return null;
 		}
 		try {
-			$exif = \Belisoful\Image\Meta\EXIF::fromTiffString($data);
+			$exif = static::ExifClass::fromTiffString($data);
 		} catch (\RuntimeException $e) {
 			return null;
 		}
@@ -343,7 +355,7 @@ class PNGImage extends ImageFile
 		}
 		$exif->setSignature('');   // the chunk holds no segment signature
 		$data = $exif->toBinary();
-		$this->setChunk(new ImageChunk(PNGChunkType::Exif, strlen($data), 0, $data));
+		$this->setChunk(new (static::ChunkClass)(PNGChunkType::Exif, strlen($data), 0, $data));
 	}
 
 	/**
@@ -357,7 +369,7 @@ class PNGImage extends ImageFile
 		if ($data === null) {
 			return null;
 		}
-		$irb = PhotoshopIRB::parse($data);
+		$irb = static::IrbClass::parse($data);
 		return $irb === false ? null : $irb;
 	}
 
@@ -386,7 +398,7 @@ class PNGImage extends ImageFile
 		if ($bare === null) {
 			return null;
 		}
-		$parsed = IPTC::parse($bare);
+		$parsed = static::IptcClass::parse($bare);
 		return $parsed === false ? null : $parsed;
 	}
 
@@ -409,7 +421,7 @@ class PNGImage extends ImageFile
 			$this->setPhotoshopIRB($irb->getResources() === [] ? null : $irb);
 			return;
 		}
-		$irb ??= new PhotoshopIRB();
+		$irb ??= new (static::IrbClass)();
 		$irb->setIPTC($iptc);
 		$this->setPhotoshopIRB($irb);
 	}
@@ -457,7 +469,7 @@ class PNGImage extends ImageFile
 		// Deflated before the old chunk goes, so a refusal leaves the file as it was.
 		$payload = $keyword . "\x00" . "\x00" . $this->deflate($text);
 		$this->removeTextChunk($keyword);
-		$this->addChunk(new ImageChunk(PNGChunkType::CompressedText, strlen($payload), 0, $payload));
+		$this->addChunk(new (static::ChunkClass)(PNGChunkType::CompressedText, strlen($payload), 0, $payload));
 	}
 
 	/**
@@ -640,7 +652,7 @@ class PNGImage extends ImageFile
 	 */
 	public function getImage(?string $mode = null): false|\GdImage|\Imagick
 	{
-		return ImageGraphics::decode($this->getBytesDirect(), $mode);
+		return static::GraphicsClass::decode($this->getBytesDirect(), $mode);
 	}
 
 	/**
@@ -653,9 +665,9 @@ class PNGImage extends ImageFile
 	 */
 	public function setImage(\GdImage|\Imagick $image): void
 	{
-		$bytes = ImageGraphics::encode($image, ImageGraphicsLibraryInterface::FormatPng);
+		$bytes = static::GraphicsClass::encode($image, ImageGraphicsLibraryInterface::FormatPng);
 		if ($bytes === false) {
-			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write PNG.', ImageGraphics::getModeOf($image)));
+			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write PNG.', static::GraphicsClass::getModeOf($image)));
 		}
 		$carried = [];
 		foreach ($this->_chunks as $chunk) {
@@ -698,9 +710,9 @@ class PNGImage extends ImageFile
 	 */
 	public static function fromImage(\GdImage|\Imagick $image): static
 	{
-		$bytes = ImageGraphics::encode($image, ImageGraphicsLibraryInterface::FormatPng);
+		$bytes = static::GraphicsClass::encode($image, ImageGraphicsLibraryInterface::FormatPng);
 		if ($bytes === false) {
-			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write PNG.', ImageGraphics::getModeOf($image)));
+			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write PNG.', static::GraphicsClass::getModeOf($image)));
 		}
 		return static::fromString($bytes);
 	}
@@ -776,7 +788,7 @@ class PNGImage extends ImageFile
 			switch ($chunk->getType()) {
 				case PNGChunkType::FrameControl:
 					$flush();
-					$pending = (new APNGFrame())->loadFcTl($chunk->getData());
+					$pending = (new (static::FrameClass)())->loadFcTl($chunk->getData());
 					$pending->setIsDefault(!$sawImageData);   // an fcTL before any IDAT describes the default image
 					break;
 				case PNGChunkType::ImageData:
@@ -810,7 +822,7 @@ class PNGImage extends ImageFile
 		if (!isset($frames[$index])) {
 			throw new \RuntimeException(sprintf('APNG frame \'%s\' is not present in the image.', $index));
 		}
-		return ImageGraphics::decode($this->frameToPng($frames[$index]), $mode);
+		return static::GraphicsClass::decode($this->frameToPng($frames[$index]), $mode);
 	}
 
 	/**
@@ -844,19 +856,19 @@ class PNGImage extends ImageFile
 		foreach ([PNGChunkType::AnimationControl, PNGChunkType::FrameControl, PNGChunkType::FrameData, PNGChunkType::ImageData] as $type) {
 			$this->removeChunk($type);
 		}
-		$this->setChunk(new ImageChunk(PNGChunkType::AnimationControl, 8, 0, pack('NN', count($frames), max(0, $playCount))));
+		$this->setChunk(new (static::ChunkClass)(PNGChunkType::AnimationControl, 8, 0, pack('NN', count($frames), max(0, $playCount))));
 
 		// The interleaved frame region: fcTL/IDAT for frame 0, then fcTL/fdAT per frame,
 		// with one ascending sequence number across every fcTL and fdAT.
 		$region = [];
 		$sequence = 0;
 		foreach ($frames as $index => $frame) {
-			$region[] = new ImageChunk(PNGChunkType::FrameControl, 26, 0, pack('N', $sequence++) . $frame->fcTlFields());
+			$region[] = new (static::ChunkClass)(PNGChunkType::FrameControl, 26, 0, pack('N', $sequence++) . $frame->fcTlFields());
 			if ($index === 0) {
-				$region[] = new ImageChunk(PNGChunkType::ImageData, strlen($frame->getData()), 0, $frame->getData());
+				$region[] = new (static::ChunkClass)(PNGChunkType::ImageData, strlen($frame->getData()), 0, $frame->getData());
 			} else {
 				$payload = pack('N', $sequence++) . $frame->getData();
-				$region[] = new ImageChunk(PNGChunkType::FrameData, strlen($payload), 0, $payload);
+				$region[] = new (static::ChunkClass)(PNGChunkType::FrameData, strlen($payload), 0, $payload);
 			}
 		}
 		$this->spliceBeforeEnd($region);
@@ -873,8 +885,8 @@ class PNGImage extends ImageFile
 	 */
 	public function addApngFrame(\GdImage|\Imagick $image, float $delaySeconds = 0.1, int $disposeOp = APNGFrame::DisposeNone, int $blendOp = APNGFrame::BlendSource): void
 	{
-		[$width, $height] = ImageGraphics::getSize($image);
-		$frame = new APNGFrame();
+		[$width, $height] = static::GraphicsClass::getSize($image);
+		$frame = new (static::FrameClass)();
 		$frame->setWidth($width);
 		$frame->setHeight($height);
 		$frame->setDelaySeconds($delaySeconds);
@@ -904,8 +916,8 @@ class PNGImage extends ImageFile
 		$png = static::fromImage($images[0]);
 		$frames = [];
 		foreach ($images as $image) {
-			[$width, $height] = ImageGraphics::getSize($image);
-			$frame = new APNGFrame();
+			[$width, $height] = static::GraphicsClass::getSize($image);
+			$frame = new (static::FrameClass)();
 			$frame->setWidth($width);
 			$frame->setHeight($height);
 			$frame->setDelaySeconds($delaySeconds);
@@ -925,9 +937,9 @@ class PNGImage extends ImageFile
 	 */
 	protected function encodeFrameData(\GdImage|\Imagick $image): string
 	{
-		$bytes = ImageGraphics::encode($image, ImageGraphicsLibraryInterface::FormatPng);
+		$bytes = static::GraphicsClass::encode($image, ImageGraphicsLibraryInterface::FormatPng);
 		if ($bytes === false) {
-			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write PNG.', ImageGraphics::getModeOf($image)));
+			throw new \RuntimeException(sprintf('The %s graphics library on this installation cannot write PNG.', static::GraphicsClass::getModeOf($image)));
 		}
 		$data = '';
 		foreach (static::fromString($bytes)->getChunks() as $chunk) {
@@ -1019,7 +1031,7 @@ class PNGImage extends ImageFile
 			$type = substr($bytes, $i + 4, 4);
 			$payload = substr($bytes, $i + 8, $size);
 			self::assertPartCount(count($this->_chunks) + 1, $len);
-			$this->_chunks[] = new ImageChunk($type, $size, $i + 8, $payload);
+			$this->_chunks[] = new (static::ChunkClass)($type, $size, $i + 8, $payload);
 			if ($type === PNGChunkType::Header && strlen($payload) >= 8) {
 				$this->setWidthDirect((int) unpack('N', substr($payload, 0, 4))[1]);
 				$this->setHeightDirect((int) unpack('N', substr($payload, 4, 4))[1]);
@@ -1078,13 +1090,13 @@ class PNGImage extends ImageFile
 			self::assertPartCount(count($this->_chunks) + 1, $start + 8 + $size);
 			if ($type === PNGChunkType::ImageData) {
 				// Defer the whole on-disk chunk (length + type + payload + CRC) and skip its bytes.
-				$this->_chunks[] = ImageChunk::deferred($type, $size, $start + 8, new SourceRange($stream, $start, 8 + $size + 4));
+				$this->_chunks[] = static::ChunkClass::deferred($type, $size, $start + 8, new SourceRange($stream, $start, 8 + $size + 4));
 				$binary->seek($start + 8 + $size + 4);
 				continue;
 			}
 			$payload = $binary->readBytes($size);
 			$binary->seek($binary->tell() + 4);   // skip the CRC
-			$this->_chunks[] = new ImageChunk($type, $size, $start + 8, $payload);
+			$this->_chunks[] = new (static::ChunkClass)($type, $size, $start + 8, $payload);
 			if ($type === PNGChunkType::Header && strlen($payload) >= 8) {
 				$this->setWidthDirect((int) unpack('N', substr($payload, 0, 4))[1]);
 				$this->setHeightDirect((int) unpack('N', substr($payload, 4, 4))[1]);
@@ -1127,13 +1139,17 @@ class PNGImage extends ImageFile
 	 */
 	protected function compose(): string
 	{
-		$out = self::Signature;
+		// Gathered and joined once: appending each chunk to its header and then to the file
+		// holds the largest chunk twice more than the file being built.
+		$parts = [self::Signature];
 		foreach ($this->getChunks() as $chunk) {
 			$type = $chunk->getType();
 			$data = $chunk->getData();
-			$out .= pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data));
+			$parts[] = pack('N', strlen($data)) . $type;
+			$parts[] = $data;
+			$parts[] = pack('N', crc32($type . $data));
 		}
-		return $out;
+		return implode('', $parts);
 	}
 
 }

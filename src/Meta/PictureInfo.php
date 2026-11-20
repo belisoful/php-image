@@ -21,6 +21,7 @@ namespace Belisoful\Image\Meta;
  * {@see toBinary()} reassembles the segment payload.
  *
  * @author Brad Anderson <belisoful@icloud.com>
+ * @phpstan-consistent-constructor
  */
 class PictureInfo
 {
@@ -62,14 +63,14 @@ class PictureInfo
 	/**
 	 * Parses an APP12 picture-info payload.
 	 * @param string $payload The segment payload.
-	 * @return false|PictureInfo The parsed info, or false when not picture-info.
+	 * @return false|static The parsed info, or false when not picture-info.
 	 */
-	public static function parse(string $payload): false|PictureInfo
+	public static function parse(string $payload): false|static
 	{
 		if (!self::isPictureInfo($payload)) {
 			return false;
 		}
-		$info = new self();
+		$info = new static();
 		foreach (self::Signatures as $signature) {
 			if (str_starts_with($payload, $signature) && $signature !== 'Type=') {
 				$info->_header = $signature;
@@ -90,9 +91,9 @@ class PictureInfo
 	 * Parses an APP12 picture-info payload from a PSR-7 stream or stream resource,
 	 * reading from the current position to the end.
 	 * @param mixed $stream The {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
-	 * @return false|PictureInfo The parsed info, or false when not picture-info.
+	 * @return false|static The parsed info, or false when not picture-info.
 	 */
-	public static function fromStream(mixed $stream): false|PictureInfo
+	public static function fromStream(mixed $stream): false|static
 	{
 		return static::parse(static::sourceBytes($stream));
 	}

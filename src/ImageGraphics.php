@@ -41,6 +41,18 @@ namespace Belisoful\Image;
 class ImageGraphics
 {
 	/**
+	 * @var class-string<ImageGraphicsGD> The class created for the GD graphics library.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const GdLibraryClass = ImageGraphicsGD::class;
+
+	/**
+	 * @var class-string<ImageGraphicsImagick> The class created for the ImageMagick graphics library.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ImagickLibraryClass = ImageGraphicsImagick::class;
+
+	/**
 	 * @var int The {@see getMaxPixels() pixel ceiling} of a process with no memory limit,
 	 *   and so no {@see ImageFile::getMemoryBudget() memory budget} to size one from: 2^28,
 	 *   a 16384 by 16384 raster, which is 768 MiB once decoded to RGB and was measured at
@@ -51,7 +63,7 @@ class ImageGraphics
 	/** @var ?string The explicit default mode, or null to auto-select. */
 	private static ?string $_defaultMode = null;
 
-	/** @var array<string, ImageGraphicsLibraryInterface> The resolved libraries, by mode name. */
+	/** @var array<string, ImageGraphicsLibraryInterface> The resolved libraries, by class. */
 	private static array $_libraries = [];
 
 	/** @var ?int The pixel ceiling set at run time, or null for the budget's. */
@@ -203,9 +215,8 @@ class ImageGraphics
 	public static function getLibrary(?string $mode = null): ImageGraphicsLibraryInterface
 	{
 		$mode = static::validateMode($mode);
-		return self::$_libraries[$mode] ??= $mode === ImageGraphicsMode::Imagick
-			? new ImageGraphicsImagick()
-			: new ImageGraphicsGD();
+		$class = $mode === ImageGraphicsMode::Imagick ? static::ImagickLibraryClass : static::GdLibraryClass;
+		return self::$_libraries[$class] ??= new $class();
 	}
 
 	/**

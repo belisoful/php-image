@@ -227,6 +227,16 @@ class GIFExtension
 	}
 
 	/**
+	 * Returns the extension as the run of byte strings that, joined, are
+	 * {@see toBinary()}; an extension is small, so that is the one string.
+	 * @return string[] The parts, in order.
+	 */
+	public function toParts(): array
+	{
+		return [$this->toBinary()];
+	}
+
+	/**
 	 * Packs the extension: the introducer, the label, the sub-blocks, and the
 	 * zero-length terminator.  A {@see getIsRaw() raw} extension instead writes its
 	 * identity as one sub-block and then the payload verbatim, ended by the

@@ -45,6 +45,18 @@ use Belisoful\Image\ImageGraphics;
  */
 class TIFFRaster
 {
+	/**
+	 * @var class-string<CCITTFaxCompressor> The class created for CCITT fax codecs.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const FaxCompressorClass = CCITTFaxCompressor::class;
+
+	/**
+	 * @var class-string<ImageGraphics> The graphics facade this class draws through.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const GraphicsClass = ImageGraphics::class;
+
 	/** The PhotometricInterpretation of a white-is-zero grayscale raster. */
 	public const WhiteIsZero = 0;
 
@@ -111,7 +123,7 @@ class TIFFRaster
 		if ($width < 1 || $height < 1) {
 			return null;
 		}
-		ImageGraphics::assertPixelCount($width, $height);   // before any buffer is sized from them
+		static::GraphicsClass::assertPixelCount($width, $height);   // before any buffer is sized from them
 		$geometry = static::readGeometry($ifd, $width, $height, $bigEndian);
 		if ($geometry === null) {
 			return null;
@@ -358,7 +370,7 @@ class TIFFRaster
 					3 => (($geometry['t4options'] ?? 0) & 1) ? CCITTFaxCompressor::Group3TwoD : CCITTFaxCompressor::Group3,
 					default => CCITTFaxCompressor::Group4,
 				};
-				$data = (new CCITTFaxCompressor($blockWidth, $mode))->decode($data, $rows);
+				$data = (new (static::FaxCompressorClass)($blockWidth, $mode))->decode($data, $rows);
 				break;
 			case 5:
 				$data = LZWCompressor::decompress($data);

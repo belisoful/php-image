@@ -1,11 +1,11 @@
 <?php
 
+use Belisoful\Image\ConformanceCategory;
 use Belisoful\Image\ImageFile;
 use Belisoful\Image\ImageGraphicsLibraryInterface;
 use Belisoful\Image\Meta\IPTC;
 use Belisoful\Image\Meta\IPTCTags;
 use Belisoful\Image\ImageGraphics;
-use Belisoful\Image\ImageGraphicsMode;
 use Belisoful\Image\Photoshop8BIM;
 use Belisoful\Image\PrivacyCategory;
 
@@ -350,12 +350,12 @@ class IPTCTest extends PHPUnit\Framework\TestCase
 		imageDestroy($image);
 	}
 
-	public function testValidate()
+	public function testConformCompletesTheEnvelopeAndTheRecordVersions()
 	{
 		$this->obj[IPTCTags::ApplicationRecordVersion] = 4;
 		$this->obj[IPTCTags::NewsPhotoVersion] = 4;
 		self::assertEquals(3, count($this->obj));
-		$this->obj->validate();
+		$this->obj->conform(ConformanceCategory::All);
 		self::assertEquals(7, count($this->obj));
 		self::assertEquals(false, $this->obj->contains(IPTCTags::ApplicationRecordVersion));
 		self::assertEquals(false, $this->obj->contains(IPTCTags::NewsPhotoVersion));
@@ -377,7 +377,7 @@ class IPTCTest extends PHPUnit\Framework\TestCase
 		$this->obj[IPTCTags::ServiceIdentifier] = '0123456789';
 		$this->obj[IPTCTags::DateSent] = '19991231';
 		$envelope = $this->obj[IPTCTags::EnvelopeNumber] = str_pad(crc32($this->obj[IPTCTags::ServiceIdentifier] . $this->obj[IPTCTags::DateSent]) % 100000000, 8, '0', STR_PAD_LEFT);
-		$this->obj->validate();
+		$this->obj->conform(ConformanceCategory::All);
 		self::assertEquals(true, $this->obj->contains(IPTCTags::ApplicationRecordVersion));
 		self::assertEquals(true, $this->obj->contains(IPTCTags::NewsPhotoVersion));
 
@@ -392,7 +392,7 @@ class IPTCTest extends PHPUnit\Framework\TestCase
 		self::assertEquals($envelope, $this->obj[IPTCTags::EnvelopeNumber]);
 
 		unset($this->obj[IPTCTags::IPTCPictureNumber]);
-		$this->obj->validate();
+		$this->obj->conform(ConformanceCategory::All);
 		self::assertEquals(true, $this->obj->contains(IPTCTags::ApplicationRecordVersion));
 		self::assertEquals(false, $this->obj->contains(IPTCTags::NewsPhotoVersion));
 	}
@@ -961,7 +961,7 @@ class IPTCTest extends PHPUnit\Framework\TestCase
 		$property = new ReflectionProperty(ImageGraphics::class, '_libraries');
 		$property->setAccessible(true);
 		$saved = $property->getValue();
-		$property->setValue(null, [ImageGraphicsMode::GD => $library] + $saved);
+		$property->setValue(null, [ImageGraphics::GdLibraryClass => $library] + $saved);
 		try {
 			$callback();
 		} finally {
@@ -1140,7 +1140,7 @@ class IPTCTest extends PHPUnit\Framework\TestCase
 		self::assertFalse($iptc->contains(IPTCTags::DateSent));
 
 		// Completing the set is still there for whoever asks for it...
-		$iptc->validate();
+		$iptc->conform(ConformanceCategory::All);
 		self::assertTrue($iptc->contains(IPTCTags::DateSent));
 		self::assertTrue($iptc->contains(IPTCTags::EnvelopeNumber));
 

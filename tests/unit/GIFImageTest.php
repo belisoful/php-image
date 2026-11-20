@@ -449,6 +449,22 @@ class GIFImageTest extends PHPUnit\Framework\TestCase
 		self::assertSame("\x01\x02\x00\x00", $frame->getPixels());
 	}
 
+	public function testSubBlocksOfAnyLengthAreWrittenAsSubBlocksThatFit()
+	{
+		// A caller may hand the data over in pieces of its own.  One longer than a sub-block
+		// may be is written as several, and an empty one -- which would read as the
+		// terminator in the middle of the data -- is not kept.
+		$frame = new GIFFrame();
+		$frame->setWidth(2);
+		$frame->setHeight(1);
+		$frame->setMinCodeSize(2);
+		$frame->setDataSubBlocks([str_repeat('x', 300), '', 'yz']);
+
+		self::assertSame([str_repeat('x', 300), 'yz'], $frame->getDataSubBlocks());
+		self::assertStringEndsWith("\xFF" . str_repeat('x', 255) . "\x2D" . str_repeat('x', 45) . "\x02yz\x00", $frame->toBinary());
+		self::assertSame(implode('', $frame->toParts()), $frame->toBinary());
+	}
+
 	public function testEmptyLzwDataLeavesNoSubBlocks()
 	{
 		$frame = new GIFFrame();

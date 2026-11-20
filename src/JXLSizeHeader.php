@@ -36,6 +36,7 @@ namespace Belisoful\Image;
  *
  * @author Brad Anderson <belisoful@icloud.com>
  * @see https://www.iso.org/standard/85018.html ISO/IEC 18181-1 (JPEG XL codestream)
+ * @phpstan-consistent-constructor
  */
 class JXLSizeHeader
 {
@@ -83,14 +84,14 @@ class JXLSizeHeader
 	/**
 	 * Reads the size header from the start of a codestream.
 	 * @param string $codestream The codestream, beginning with {@see Signature}.
-	 * @return ?self The header, or null when the bytes are not a codestream or end early.
+	 * @return ?static The header, or null when the bytes are not a codestream or end early.
 	 */
-	public static function fromCodestream(string $codestream): ?self
+	public static function fromCodestream(string $codestream): ?static
 	{
 		if (!str_starts_with($codestream, self::Signature)) {
 			return null;
 		}
-		$header = new self();
+		$header = new static();
 		return $header->read(substr($codestream, strlen(self::Signature), 16)) ? $header : null;
 	}
 

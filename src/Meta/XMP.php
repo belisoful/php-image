@@ -10,6 +10,8 @@
 
 namespace Belisoful\Image\Meta;
 
+use Belisoful\Image\ConformableInterface;
+use Belisoful\Image\ConformanceCategory;
 use Belisoful\Image\PrivacyScrubbableInterface;
 use Belisoful\Image\PrivacyCategory;
 
@@ -49,7 +51,7 @@ use Belisoful\Image\PrivacyCategory;
  * @author Brad Anderson <belisoful@icloud.com>
  * @see https://www.iso.org/standard/75163.html ISO 16684-1 (XMP)
  */
-class XMP implements PrivacyScrubbableInterface
+class XMP implements PrivacyScrubbableInterface, ConformableInterface
 {
 	use \Belisoful\Image\StreamIOTrait;
 
@@ -1235,10 +1237,10 @@ class XMP implements PrivacyScrubbableInterface
 
 	/**
 	 * Checks every property against its schema's defined form.
-	 * @return array<string, string> The `prefix:name` to complaint map, empty when the
-	 *   packet agrees with the schemas it uses.
+	 * @return array<string, array{0: string, 1: string, 2: string}> For each property out of
+	 *   line, by `prefix:name`: its namespace, its name, and the complaint.
 	 */
-	public function validate(): array
+	private function formProblems(): array
 	{
 		$problems = [];
 		foreach ($this->getPropertyNames() as [$namespace, $name]) {
@@ -1253,21 +1255,63 @@ class XMP implements PrivacyScrubbableInterface
 
 			if ($expectedArray !== null) {
 				if ($actualArray === null) {
-					$problems[$label] = "expected an rdf:$expectedArray array";
+					$problems[$label] = [$namespace, $name, "expected an rdf:$expectedArray array"];
 				} elseif ($actualArray !== $expectedArray) {
-					$problems[$label] = "expected an rdf:$expectedArray array, found rdf:$actualArray";
+					$problems[$label] = [$namespace, $name, "expected an rdf:$expectedArray array, found rdf:$actualArray"];
 				} elseif ($form === XMPSchemas::LangAlt && $this->getLangAlt($namespace, $name) === []) {
-					$problems[$label] = 'expected language alternatives';
+					$problems[$label] = [$namespace, $name, 'expected language alternatives'];
 				}
 				continue;
 			}
 			if ($form === XMPSchemas::Struct && !(is_array($value) && !array_is_list($value))) {
-				$problems[$label] = 'expected a structure';
+				$problems[$label] = [$namespace, $name, 'expected a structure'];
 			} elseif ($form === XMPSchemas::Simple && is_array($value)) {
-				$problems[$label] = 'expected a simple value';
+				$problems[$label] = [$namespace, $name, 'expected a simple value'];
 			}
 		}
 		return $problems;
+	}
+
+	/**
+	 * Reports the properties stored in a form other than their schema's, changing nothing.
+	 * @param int $types The {@see ConformanceCategory} flags to report; a property's form is
+	 *   {@see ConformanceCategory::Type}. Default {@see ConformanceCategory::All}.
+	 * @return array<string, string> The `prefix:name` to complaint map, empty when the
+	 *   packet agrees with the schemas it uses.
+	 */
+	public function validate(int $types = ConformanceCategory::All): array
+	{
+		return ($types & ConformanceCategory::Type) === 0 ? [] : array_map(fn (array $problem) => $problem[2], $this->formProblems());
+	}
+
+	/**
+	 * Rewrites the properties {@see validate()} reports in the form their schema gives
+	 * them: text where a collection belongs becomes that collection of one item, and a
+	 * collection of the wrong kind becomes the right one.  A property that would have to be
+	 * taken apart or guessed at -- a collection where one value belongs, text where a
+	 * structure does -- is left as it is and stays reported.
+	 * @param int $types The {@see ConformanceCategory} flags to correct. Default {@see ConformanceCategory::Safe}.
+	 * @return int The number of properties rewritten.
+	 */
+	public function conform(int $types = ConformanceCategory::Safe): int
+	{
+		if (($types & ConformanceCategory::Type) === 0) {
+			return 0;
+		}
+		$corrected = 0;
+		foreach ($this->formProblems() as $label => [$namespace, $name]) {
+			if (XMPSchemas::arrayFormOf($namespace, $name) === null) {
+				continue;
+			}
+			$value = $this->getProperty($namespace, $name);
+			if (!is_array($value) && XMPSchemas::formOf($namespace, $name) !== XMPSchemas::LangAlt) {
+				$value = [$value];   // text where a collection belongs is that collection of one item
+			}
+			$this->setProperty($namespace, $name, null);
+			$this->setProperty($namespace, $name, $value);
+			$corrected += (int) !isset($this->formProblems()[$label]);
+		}
+		return $corrected;
 	}
 
 	/**

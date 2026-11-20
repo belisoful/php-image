@@ -27,6 +27,7 @@ use Belisoful\Image\Stream\SourceRange;
  * path, and {@see setData()} loads it.
  *
  * @author Brad Anderson <belisoful@icloud.com>
+ * @phpstan-consistent-constructor
  */
 class ImageChunk
 {
@@ -66,11 +67,11 @@ class ImageChunk
 	 * @param int $size The payload size in bytes.
 	 * @param int $offset The byte offset of the payload within the source.
 	 * @param SourceRange $wholeChunk The whole on-disk chunk range (length + type + payload + CRC).
-	 * @return self The deferred chunk.
+	 * @return static The deferred chunk.
 	 */
-	public static function deferred(string $type, int $size, int $offset, SourceRange $wholeChunk): self
+	public static function deferred(string $type, int $size, int $offset, SourceRange $wholeChunk): static
 	{
-		$chunk = new self($type, $size, $offset, '');
+		$chunk = new static($type, $size, $offset, '');
 		$chunk->_range = $wholeChunk;
 		return $chunk;
 	}

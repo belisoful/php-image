@@ -44,9 +44,67 @@ use Psr\Http\Message\StreamInterface;
  *
  * @author Brad Anderson <belisoful@icloud.com>
  */
-abstract class ImageFile implements PrivacyScrubbableInterface
+abstract class ImageFile implements PrivacyScrubbableInterface, ConformableInterface
 {
 	use StreamIOTrait;
+
+	/**
+	 * @var class-string<EXIF> The class created for EXIF metadata.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ExifClass = EXIF::class;
+
+	/**
+	 * @var class-string<ImageGraphics> The graphics facade this class draws through.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const GraphicsClass = ImageGraphics::class;
+
+	/**
+	 * @var class-string<IPTC> The class created for IPTC record sets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IptcClass = IPTC::class;
+
+	/**
+	 * @var class-string<PhotoshopIRB> The class created for Photoshop resource blocks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IrbClass = PhotoshopIRB::class;
+
+	/**
+	 * @var class-string<XMP> The class created for XMP packets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const XmpClass = XMP::class;
+
+	/**
+	 * @var class-string<JPEGImage> The container opened for a JPEG when a factory is called
+	 *   on an abstract class, which finds the format from the bytes.  An abstract subclass
+	 *   names its own containers in these eight to have them opened instead.
+	 */
+	public const JpegClass = JPEGImage::class;
+
+	/** @var class-string<PNGImage> The container opened for a PNG. */
+	public const PngClass = PNGImage::class;
+
+	/** @var class-string<GIFImage> The container opened for a GIF. */
+	public const GifClass = GIFImage::class;
+
+	/** @var class-string<WebPImage> The container opened for a WebP. */
+	public const WebPClass = WebPImage::class;
+
+	/** @var class-string<AVIImage> The container opened for an AVI. */
+	public const AviClass = AVIImage::class;
+
+	/** @var class-string<JXLImage> The container opened for a JPEG XL. */
+	public const JxlClass = JXLImage::class;
+
+	/** @var class-string<BMFFFile> The container opened for an ISO base media file. */
+	public const BmffClass = BMFFFile::class;
+
+	/** @var class-string<TIFFImage> The container opened for a TIFF. */
+	public const TiffClass = TIFFImage::class;
 
 	/**
 	 * Final so the static parse factories can safely instantiate any subclass with
@@ -85,10 +143,10 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 
 	/**
 	 * @var int The bytes of a memory budget that allow one byte of a file read whole.
-	 *   Reading a file and writing it back was measured to peak at 3.0 times its length for
-	 *   a JPEG, 4.0 to 4.1 for the other containers, and 4.4 for a GIF of full sub-blocks.
+	 *   Reading a file and writing it back was measured to peak at 3.0 to 3.2 times its
+	 *   length, and at 3.8 for a GIF of full sub-blocks.
 	 */
-	public const BudgetBytesPerFileByte = 5;
+	public const BudgetBytesPerFileByte = 4;
 
 	/**
 	 * @var float The share of PHP's `memory_limit` that is the {@see getMemoryBudget() memory
@@ -162,8 +220,8 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 
 	/**
 	 * Returns the file ceiling: the longest file that is read whole.  A file read whole is
-	 * held in memory, then again as the parts it is made of, and a third and fourth time
-	 * while it is written back, so its length is the largest single thing a read costs.
+	 * held in memory, then again as the parts it is made of, and a third time while it is
+	 * written back, so its length is the largest single thing a read costs.
 	 *
 	 * {@see fromFile()}, {@see fromStream()} and {@see fromString()} refuse a longer one,
 	 * and the first two stop reading at the ceiling rather than find out by running out of
@@ -353,12 +411,13 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	 *   {@see getMaxFileSize() file ceiling}.
 	 * @return static The parsed image reader.
 	 */
-	public static function fromString(string $bytes): static
+	public static function fromString(string $bytes): self
 	{
 		self::assertFileSize(strlen($bytes));
-		if (static::class === self::class) {
-			// Called on the abstract base: detect the container from the bytes and open it.
-			$container = self::detect($bytes);
+		if ((new \ReflectionClass(static::class))->isAbstract()) {
+			// Called on the abstract base, or an abstract subclass naming its own containers:
+			// detect the container from the bytes and open it.
+			$container = static::detect($bytes);
 			/** @var static $image (a detected container is-a ImageFile, which static is here) */
 			$image = $container::fromString($bytes);
 			return $image;
@@ -377,14 +436,14 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	protected static function detect(string $bytes): string
 	{
 		return match (true) {
-			JPEGImage::isJPEG($bytes) => JPEGImage::class,
-			PNGImage::isPNG($bytes) => PNGImage::class,
-			GIFImage::isGIF($bytes) => GIFImage::class,
-			WebPImage::isWebP($bytes) => WebPImage::class,
-			AVIImage::isAVI($bytes) => AVIImage::class,
-			JXLImage::isJXL($bytes) => JXLImage::class,
-			BMFFFile::isBMFF($bytes) => BMFFFile::class,
-			TIFFImage::isTIFF($bytes) => TIFFImage::class,
+			static::JpegClass::isJPEG($bytes) => static::JpegClass,
+			static::PngClass::isPNG($bytes) => static::PngClass,
+			static::GifClass::isGIF($bytes) => static::GifClass,
+			static::WebPClass::isWebP($bytes) => static::WebPClass,
+			static::AviClass::isAVI($bytes) => static::AviClass,
+			static::JxlClass::isJXL($bytes) => static::JxlClass,
+			static::BmffClass::isBMFF($bytes) => static::BmffClass,
+			static::TiffClass::isTIFF($bytes) => static::TiffClass,
 			default => throw new \UnexpectedValueException('The bytes are not a recognized image format (JPEG, PNG, GIF, WebP, or TIFF).'),
 		};
 	}
@@ -397,7 +456,7 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	 *   {@see getMaxFileSize() file ceiling}.
 	 * @return static The parsed image reader.
 	 */
-	public static function fromStream(mixed $stream): static
+	public static function fromStream(mixed $stream): self
 	{
 		StreamIO::rewind($stream);
 		return static::fromString(static::fileBytes($stream));
@@ -411,7 +470,7 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 	 *   {@see getMaxFileSize() file ceiling}.
 	 * @return static The parsed image reader.
 	 */
-	public static function fromFile(string $path): static
+	public static function fromFile(string $path): self
 	{
 		return static::fromString(static::readFile($path));
 	}
@@ -768,6 +827,94 @@ abstract class ImageFile implements PrivacyScrubbableInterface
 		}
 
 		return $removed + $this->clearFormatPrivateData($types);
+	}
+
+	//
+	// ─── Conformance ─────────────────────────────────────────────────────────
+	//
+
+	/**
+	 * Returns the carriers a conformance check reaches: the EXIF and the XMP through their
+	 * accessors, so a container's own way of carrying them is honored, and the IPTC record
+	 * set, which every container answers.  The Photoshop resource block is not one of them:
+	 * what it holds that has a form to depart from is that same IPTC.
+	 * @return array<string, array{0: ConformableInterface, 1: string}> Each carrier that is
+	 *   present, by name, with the setter that writes it back.
+	 */
+	private function conformableCarriers(): array
+	{
+		$carriers = [];
+		foreach (['EXIF', 'XMP', 'IPTC'] as $name) {
+			$carrier = call_user_func([$this, 'get' . $name]);
+			if ($carrier instanceof ConformableInterface) {
+				$carriers[$name] = [$carrier, 'set' . $name];
+			}
+		}
+		return $carriers;
+	}
+
+	/**
+	 * Reports where the file's metadata departs from the specifications, changing nothing:
+	 * what each carrier it holds reports ({@see \Belisoful\Image\Meta\EXIF::validate()},
+	 * {@see \Belisoful\Image\Meta\XMP::validate()}, {@see \Belisoful\Image\Meta\IPTC::validate()}),
+	 * under the carrier's name, and what only its format can tell ({@see validateFormat()}).
+	 * @param int $types The {@see ConformanceCategory} flags to report. Default {@see ConformanceCategory::All}.
+	 * @return array<string, string> What is wrong, by carrier and field (`"EXIF IFD0:XResolution"`).
+	 */
+	public function validate(int $types = ConformanceCategory::All): array
+	{
+		$problems = [];
+		foreach ($this->conformableCarriers() as $name => [$carrier]) {
+			foreach ($carrier->validate($types) as $what => $problem) {
+				$problems["$name $what"] = $problem;
+			}
+		}
+		return $problems + $this->validateFormat($types);
+	}
+
+	/**
+	 * Corrects what {@see validate()} reports, in every carrier the file holds and then in
+	 * what only its format knows ({@see conformFormat()}).  A file is otherwise written
+	 * back as it was read, departures included; this is how a caller asks for them to be
+	 * put right.
+	 * @param int $types The {@see ConformanceCategory} flags to correct. Default
+	 *   {@see ConformanceCategory::Safe}, which leaves out values that would be invented.
+	 * @return int The number of corrections made across every carrier.
+	 */
+	public function conform(int $types = ConformanceCategory::Safe): int
+	{
+		$corrected = 0;
+		foreach ($this->conformableCarriers() as [$carrier, $setter]) {
+			$count = $carrier->conform($types);
+			if ($count > 0) {
+				call_user_func([$this, $setter], $carrier);
+				$corrected += $count;
+			}
+		}
+		return $corrected + $this->conformFormat($types);
+	}
+
+	/**
+	 * Reports the departures only this format can tell of.  The base implementation
+	 * reports none; a container overrides it to extend the reach of {@see validate()}.
+	 * @param int $types The {@see ConformanceCategory} flags to report.
+	 * @return array<string, string> What is wrong, by field.
+	 */
+	protected function validateFormat(int $types): array
+	{
+		return [];
+	}
+
+	/**
+	 * Corrects the departures only this format knows the correction for.  The base
+	 * implementation corrects none; a container overrides it to extend the reach of
+	 * {@see conform()}.
+	 * @param int $types The {@see ConformanceCategory} flags to correct.
+	 * @return int The number of corrections made.
+	 */
+	protected function conformFormat(int $types): int
+	{
+		return 0;
 	}
 
 	/**

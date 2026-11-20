@@ -40,6 +40,30 @@ use Belisoful\Image\TIFF\TIFFTag;
  */
 class TIFFImage extends ImageFile
 {
+	/**
+	 * @var class-string<CCITTFaxCompressor> The class created for CCITT fax codecs.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const FaxCompressorClass = CCITTFaxCompressor::class;
+
+	/**
+	 * @var class-string<TIFFIfd> The class created for TIFF directories.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IfdClass = TIFFIfd::class;
+
+	/**
+	 * @var class-string<TIFFRaster> The decoder this class reads its raster with.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const RasterClass = TIFFRaster::class;
+
+	/**
+	 * @var class-string<TIFFTag> The class created for TIFF fields.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const TagClass = TIFFTag::class;
+
 	/** The IFD0 ImageWidth tag. */
 	public const WidthTag = 256;
 
@@ -148,7 +172,7 @@ class TIFFImage extends ImageFile
 			return;
 		}
 		if ($this->_exif === null) {
-			$this->_exif = new EXIF();
+			$this->_exif = new (static::ExifClass)();
 			$this->_exif->setSignature('');
 		}
 		$ifd0 = $this->_exif->getIfd0();
@@ -176,11 +200,11 @@ class TIFFImage extends ImageFile
 	 */
 	protected static function copyTag(TIFFTag $tag): TIFFTag
 	{
-		$copy = new TIFFTag($tag->getId(), $tag->getType(), $tag->getValues());
+		$copy = new (static::TagClass)($tag->getId(), $tag->getType(), $tag->getValues());
 		$copy->setOffset($tag->getOffset());
 		$copy->setPreserveOffset($tag->getPreserveOffset());
 		if ($sub = $tag->getSubIfd()) {
-			$ifd = new TIFFIfd();
+			$ifd = new (static::IfdClass)();
 			foreach ($sub->getTags() as $subTag) {
 				$ifd->setTag(self::copyTag($subTag));
 			}
@@ -203,7 +227,7 @@ class TIFFImage extends ImageFile
 	 */
 	protected function parse(): void
 	{
-		$this->_exif = EXIF::fromTiffString($this->getBytesDirect());
+		$this->_exif = static::ExifClass::fromTiffString($this->getBytesDirect());
 		$this->readMetadataFromExif();
 	}
 
@@ -222,7 +246,7 @@ class TIFFImage extends ImageFile
 	{
 		StreamIO::rewind($stream);
 		$image = new static();
-		$image->_exif = EXIF::scanStream($stream, true);   // capture strips as deferred ranges
+		$image->_exif = static::ExifClass::scanStream($stream, true);   // capture strips as deferred ranges
 		$image->readMetadataFromExif();
 		return $image;
 	}
@@ -283,11 +307,11 @@ class TIFFImage extends ImageFile
 	public function getImage(?string $mode = null): false|\GdImage|\Imagick
 	{
 		$ifd0 = $this->_exif?->getIfd0();
-		$rgb = $ifd0 === null ? null : TIFFRaster::toRgb($ifd0, (int) $this->getWidth(), (int) $this->getHeight(), $this->_exif->getTiff()->getIsBigEndian());
+		$rgb = $ifd0 === null ? null : static::RasterClass::toRgb($ifd0, (int) $this->getWidth(), (int) $this->getHeight(), $this->_exif->getTiff()->getIsBigEndian());
 		if ($rgb === null) {
 			return false;
 		}
-		return ImageGraphics::fromRgbPixels($rgb, $this->getWidth(), $this->getHeight(), $mode);
+		return static::GraphicsClass::fromRgbPixels($rgb, $this->getWidth(), $this->getHeight(), $mode);
 	}
 
 	/**
@@ -300,7 +324,7 @@ class TIFFImage extends ImageFile
 	public static function fromImage(\GdImage|\Imagick $image, int $compression = self::CompressionLzw): static
 	{
 		$tiff = new static();
-		$exif = new EXIF();
+		$exif = new (static::ExifClass)();
 		$exif->setSignature('');
 		$tiff->_exif = $exif;
 		$tiff->encodeImage($image, $compression);
@@ -316,7 +340,7 @@ class TIFFImage extends ImageFile
 	public function setImage(\GdImage|\Imagick $image, int $compression = self::CompressionLzw): void
 	{
 		if ($this->_exif === null) {
-			$this->_exif = new EXIF();
+			$this->_exif = new (static::ExifClass)();
 			$this->_exif->setSignature('');
 		}
 		$this->encodeImage($image, $compression);
@@ -335,12 +359,12 @@ class TIFFImage extends ImageFile
 	 */
 	protected function encodeImage(\GdImage|\Imagick $image, int $compression): void
 	{
-		[$width, $height] = ImageGraphics::getSize($image);
+		[$width, $height] = static::GraphicsClass::getSize($image);
 		$ifd0 = $this->_exif->getIfd0();
 		$bilevel = $compression === self::CompressionCcittRle || $compression === self::CompressionGroup3 || $compression === self::CompressionGroup4;
 
 		if ($bilevel) {
-			$mono = ImageGraphics::monoPixels($image, true);
+			$mono = static::GraphicsClass::monoPixels($image, true);
 			$rowBytes = intdiv($width + 7, 8);
 			$data = str_repeat("\0", $rowBytes * $height);
 			for ($y = 0; $y < $height; $y++) {
@@ -356,12 +380,12 @@ class TIFFImage extends ImageFile
 				self::CompressionGroup3 => CCITTFaxCompressor::Group3,
 				default => CCITTFaxCompressor::Group4,
 			};
-			$strip = (new CCITTFaxCompressor($width, $mode))->encode($data);
+			$strip = (new (static::FaxCompressorClass)($width, $mode))->encode($data);
 			$bits = [1];
 			$samples = 1;
 			$photometric = 0;   // white is zero: a set bit is black
 		} else {
-			$data = ImageGraphics::rgbPixels($image);
+			$data = static::GraphicsClass::rgbPixels($image);
 			$strip = match ($compression) {
 				self::CompressionPackBits => PackBitsCompressor::compress($data),
 				self::CompressionLzw => LZWCompressor::compress(HorizontalPredictor::encode($data, $width, 3)),
@@ -425,7 +449,7 @@ class TIFFImage extends ImageFile
 			if ($xmp === null) {
 				return;
 			}
-			$this->_exif = new EXIF();
+			$this->_exif = new (static::ExifClass)();
 			$this->_exif->setSignature('');
 		}
 		$this->_exif->setXmpText($xmp);
@@ -468,7 +492,7 @@ class TIFFImage extends ImageFile
 			if ($irb === null) {
 				return;
 			}
-			$this->_exif = new EXIF();
+			$this->_exif = new (static::ExifClass)();
 			$this->_exif->setSignature('');
 		}
 		$this->_exif->setIRB($irb);

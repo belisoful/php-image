@@ -10,6 +10,8 @@
 
 namespace Belisoful\Image\Meta;
 
+use Belisoful\Image\ConformableInterface;
+use Belisoful\Image\ConformanceCategory;
 use Belisoful\Image\PrivacyScrubbableInterface;
 use Belisoful\Image\PhotoshopIRB;
 use Belisoful\Image\PrivacyCategory;
@@ -55,9 +57,51 @@ use Belisoful\Image\Stream\StreamIO;
  *
  * @author Brad Anderson <belisoful@icloud.com>
  */
-class EXIF implements PrivacyScrubbableInterface
+class EXIF implements PrivacyScrubbableInterface, ConformableInterface
 {
 	use \Belisoful\Image\StreamIOTrait;
+
+	/**
+	 * @var class-string<TIFFIfd> The class created for TIFF directories.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IfdClass = TIFFIfd::class;
+
+	/**
+	 * @var class-string<IPTC> The class created for IPTC record sets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IptcClass = IPTC::class;
+
+	/**
+	 * @var class-string<PhotoshopIRB> The class created for Photoshop resource blocks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IrbClass = PhotoshopIRB::class;
+
+	/**
+	 * @var class-string<Makernote\Makernote> The class created for maker notes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const MakernoteClass = Makernote\Makernote::class;
+
+	/**
+	 * @var class-string<PrintIM> The class created for PrintIM blocks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const PrintImClass = PrintIM::class;
+
+	/**
+	 * @var class-string<TIFFDocument> The class created for TIFF documents.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const TiffDocumentClass = TIFFDocument::class;
+
+	/**
+	 * @var class-string<XMP> The class created for XMP packets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const XmpClass = XMP::class;
 
 	/** The JPEG APP1 EXIF signature. */
 	public const ExifSignature = "Exif\x00\x00";
@@ -104,7 +148,7 @@ class EXIF implements PrivacyScrubbableInterface
 	 */
 	final public function __construct(?TIFFDocument $tiff = null)
 	{
-		$this->_tiff = $tiff ?? new TIFFDocument();
+		$this->_tiff = $tiff ?? new (static::TiffDocumentClass)();
 	}
 
 	/**
@@ -141,7 +185,7 @@ class EXIF implements PrivacyScrubbableInterface
 	 */
 	public static function fromTiffString(string $bytes): static
 	{
-		$exif = new static(TIFFDocument::fromString($bytes, static::subIfdTags()));
+		$exif = new static(static::TiffDocumentClass::fromString($bytes, static::subIfdTags()));
 		$exif->_signature = '';
 		$exif->_rawTiff = $bytes;
 		$exif->captureThumbnail($bytes);
@@ -197,7 +241,7 @@ class EXIF implements PrivacyScrubbableInterface
 	{
 		$io = new BinaryReader($stream);
 		$base = $io->tell();
-		$exif = new static(TIFFDocument::scanStream($stream, static::subIfdTags(), deferStrips: $deferStrips));
+		$exif = new static(static::TiffDocumentClass::scanStream($stream, static::subIfdTags(), deferStrips: $deferStrips));
 		$exif->_signature = '';
 		$exif->pinMakernote();
 
@@ -390,7 +434,7 @@ class EXIF implements PrivacyScrubbableInterface
 	public function getIfd0(): TIFFIfd
 	{
 		if ($this->_tiff->getIfd(0) === null) {
-			$this->_tiff->addIfd(new TIFFIfd());
+			$this->_tiff->addIfd(new (static::IfdClass)());
 		}
 		return $this->_tiff->getIfd(0);
 	}
@@ -415,7 +459,7 @@ class EXIF implements PrivacyScrubbableInterface
 			if (!$create) {
 				return null;
 			}
-			$tag->setSubIfd(new TIFFIfd());
+			$tag->setSubIfd(new (static::IfdClass)());
 		}
 		return $tag->getSubIfd();
 	}
@@ -460,7 +504,7 @@ class EXIF implements PrivacyScrubbableInterface
 	{
 		if ($this->_tiff->getIfd(1) === null && $create) {
 			$this->getIfd0();
-			$this->_tiff->addIfd(new TIFFIfd());
+			$this->_tiff->addIfd(new (static::IfdClass)());
 		}
 		return $this->_tiff->getIfd(1);
 	}
@@ -622,7 +666,7 @@ class EXIF implements PrivacyScrubbableInterface
 			return null;
 		}
 		$bytes = $this->tagBytes($tag);
-		$iptc = IPTC::parse($bytes);
+		$iptc = static::IptcClass::parse($bytes);
 		return $iptc === false ? null : $iptc;
 	}
 
@@ -646,9 +690,129 @@ class EXIF implements PrivacyScrubbableInterface
 		if ($tag !== null && $this->tagBytes($tag) === $bytes) {
 			return;
 		}
+		$this->writeIptcBytes($bytes);
+	}
+
+	/**
+	 * Writes IPTC datasets into tag 33723 as LONG.
+	 * @param string $bytes The datasets.
+	 */
+	private function writeIptcBytes(string $bytes): void
+	{
 		$bytes .= str_repeat("\0", -strlen($bytes) & 3);
 		$longs = unpack($this->_tiff->getIsBigEndian() ? 'N*' : 'V*', $bytes);
-		$ifd0->setTagValues(self::IptcTag, TIFFDataType::ULong, array_values((array) $longs));
+		$this->getIfd0()->setTagValues(self::IptcTag, TIFFDataType::ULong, array_values((array) $longs));
+	}
+
+	//
+	// ─── Conformance ─────────────────────────────────────────────────────────
+	//
+
+	/**
+	 * Lists the fields the Exif specification requires of this metadata, which depends on
+	 * what it describes.  The Exif block of a compressed image -- a JPEG's APP1 segment --
+	 * must state how its chroma is sited and, where it has the directories, its version,
+	 * component order, colour space, pixel dimensions and GPS version.  A TIFF file's own
+	 * directory must state its resolution and, where it has them, the version, Flashpix
+	 * version, colour space and GPS version.  An Exif block carried by any other container
+	 * (PNG, WebP, HEIF, JPEG XL) has no field the specification requires of it.
+	 * @return array<string, array{0: TIFFIfd, 1: int, 2: int, 3: null|array|string}> For each
+	 *   required field, by `directory:name`: the directory it belongs in, its tag id, its
+	 *   type, and the value the specification gives it -- null where only the image knows.
+	 */
+	protected function requiredFields(): array
+	{
+		$ifd0 = $this->getIfd0();
+		$exif = $this->getExifIfd();
+		$gps = $this->getGpsIfd();
+		$utf8 = false;
+		foreach ([$ifd0, $exif, $gps] as $ifd) {
+			foreach ($ifd?->getTags() ?? [] as $tag) {
+				$utf8 = $utf8 || $tag->getType() === TIFFDataType::Utf8;
+			}
+		}
+		// A field of the UTF-8 type came with Exif 3.0; anything else is as old as 2.32.
+		$version = ['ExifIFD:ExifVersion', 0x9000, TIFFDataType::Undefined, $utf8 ? '0300' : '0232'];
+		$colour = ['ExifIFD:ColorSpace', 0xA001, TIFFDataType::UShort, [0xFFFF]];   // uncalibrated: nothing says otherwise
+		$fields = [];
+		if ($this->_signature === self::ExifSignature) {
+			$fields[] = [$ifd0, 'IFD0:YCbCrPositioning', 0x0213, TIFFDataType::UShort, [1]];
+			$inExif = [
+				$version,
+				['ExifIFD:ComponentsConfiguration', 0x9101, TIFFDataType::Undefined, "\x01\x02\x03\x00"],
+				$colour,
+				['ExifIFD:PixelXDimension', 0xA002, TIFFDataType::ULong, null],
+				['ExifIFD:PixelYDimension', 0xA003, TIFFDataType::ULong, null],
+			];
+		} elseif ($ifd0->getTag(273) !== null || $ifd0->getTag(324) !== null) {
+			$fields[] = [$ifd0, 'IFD0:XResolution', 282, TIFFDataType::URational, [[72, 1]]];
+			$fields[] = [$ifd0, 'IFD0:YResolution', 283, TIFFDataType::URational, [[72, 1]]];
+			$inExif = [$version, ['ExifIFD:FlashpixVersion', 0xA000, TIFFDataType::Undefined, '0100'], $colour];
+		} else {
+			return [];
+		}
+		foreach ($exif === null ? [] : $inExif as $field) {
+			$fields[] = [$exif, ...$field];
+		}
+		if ($gps !== null) {
+			$fields[] = [$gps, 'GPS:GPSVersionID', 0x0000, TIFFDataType::UByte, [2, 3, 0, 0]];
+		}
+		$required = [];
+		foreach ($fields as [$ifd, $label, $id, $type, $value]) {
+			$required[$label] = [$ifd, $id, $type, $value];
+		}
+		return $required;
+	}
+
+	/**
+	 * Reports where the metadata departs from the TIFF and Exif specifications, changing
+	 * nothing: the IPTC tag stored in a type other than LONG, and the
+	 * {@see requiredFields() required fields} that are missing.
+	 * @param int $types The {@see ConformanceCategory} flags to report. Default {@see ConformanceCategory::All}.
+	 * @return array<string, string> What is wrong, by `directory:name`.
+	 */
+	public function validate(int $types = ConformanceCategory::All): array
+	{
+		$problems = [];
+		$iptc = $this->getIfd0()->getTag(self::IptcTag);
+		if (($types & ConformanceCategory::Type) && $iptc !== null && $iptc->getType() !== TIFFDataType::ULong) {
+			$problems['IFD0:IPTC-NAA'] = 'expected type LONG';
+		}
+		if ($types & ConformanceCategory::Required) {
+			foreach ($this->requiredFields() as $label => [$ifd, $id]) {
+				if ($ifd->getTag($id) === null) {
+					$problems[$label] = 'required and missing';
+				}
+			}
+		}
+		return $problems;
+	}
+
+	/**
+	 * Corrects what {@see validate()} reports: rewrites the IPTC tag as LONG, its datasets
+	 * unchanged, and adds each missing required field with the value the specification
+	 * gives it.  The pixel dimensions are the image's to state, so they are added by the
+	 * container that holds both ({@see \Belisoful\Image\ImageFile::conform()}).
+	 * @param int $types The {@see ConformanceCategory} flags to correct. Default {@see ConformanceCategory::Safe}.
+	 * @return int The number of fields rewritten or added.
+	 */
+	public function conform(int $types = ConformanceCategory::Safe): int
+	{
+		$corrected = 0;
+		$iptc = $this->getIfd0()->getTag(self::IptcTag);
+		if (($types & ConformanceCategory::Type) && $iptc !== null && $iptc->getType() !== TIFFDataType::ULong) {
+			$this->writeIptcBytes($this->tagBytes($iptc));
+			$corrected++;
+		}
+		if ($types & ConformanceCategory::Required) {
+			foreach ($this->requiredFields() as [$ifd, $id, $type, $value]) {
+				if ($ifd->getTag($id) === null && $value !== null) {
+					$ifd->setTagValues($id, $type, $value);
+					$corrected++;
+				}
+			}
+		}
+		return $corrected;
 	}
 
 	/**
@@ -684,7 +848,7 @@ class EXIF implements PrivacyScrubbableInterface
 		if ($text === null) {
 			return null;
 		}
-		$xmp = XMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -730,7 +894,7 @@ class EXIF implements PrivacyScrubbableInterface
 		if ($data === null) {
 			return null;
 		}
-		$irb = PhotoshopIRB::parse($data);
+		$irb = static::IrbClass::parse($data);
 		return $irb === false ? null : $irb;
 	}
 
@@ -763,7 +927,7 @@ class EXIF implements PrivacyScrubbableInterface
 		if ($data === null) {
 			return null;
 		}
-		$pim = PrintIM::parse($data, $this->_tiff->getIsBigEndian());
+		$pim = static::PrintImClass::parse($data, $this->_tiff->getIsBigEndian());
 		return $pim === false ? null : $pim;
 	}
 
@@ -805,7 +969,7 @@ class EXIF implements PrivacyScrubbableInterface
 	 */
 	public function getMakernote(): ?Makernote\Makernote
 	{
-		return Makernote\Makernote::fromExif($this);
+		return static::MakernoteClass::fromExif($this);
 	}
 
 	/**
