@@ -139,7 +139,7 @@ class EXIFAudio
 	 */
 	public static function fromStream(mixed $stream): static
 	{
-		return static::fromString(static::sourceBytes($stream));
+		return static::fromString(static::fileBytes($stream));
 	}
 
 	/**
@@ -150,11 +150,7 @@ class EXIFAudio
 	 */
 	public static function fromFile(string $path): static
 	{
-		$bytes = @file_get_contents($path);
-		if ($bytes === false) {
-			throw new \RuntimeException(sprintf('Image file \'%s\' cannot be read.', $path));
-		}
-		return static::fromString($bytes);
+		return static::fromString(static::readFile($path));
 	}
 
 	/**

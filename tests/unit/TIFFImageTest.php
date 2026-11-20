@@ -112,6 +112,80 @@ class TIFFImageTest extends PHPUnit\Framework\TestCase
 		self::assertNull($tiff->getEXIF()->getIfd0()->getTag(TIFFImage::WidthTag), 'no raster tag is taken');
 	}
 
+	// ---- resolution: baseline TIFF requires XResolution (282) and YResolution (283) ----
+
+	public function testAnAuthoredRasterStatesAResolution()
+	{
+		// An image has no resolution to carry over, so its TIFF gets 72 pixels an inch, the
+		// convention for one that is not known.
+		$ifd0 = TIFFImage::fromString($this->gdTiff()->toBinary())->getEXIF()->getIfd0();
+		foreach ([282, 283] as $id) {
+			self::assertSame(TIFFDataType::URational, $ifd0->getTag($id)->getType());
+			self::assertSame([[72, 1]], $ifd0->getTag($id)->getValues());
+		}
+		self::assertSame([2], $ifd0->getTag(296)->getValues());
+	}
+
+	public function testSetImageKeepsTheResolutionAFileStates()
+	{
+		$image = imagecreatetruecolor(3, 2);
+
+		// Both axes stated, in centimetres: all three tags are left as they are.
+		$tiff = $this->gdTiff();
+		$ifd0 = $tiff->getEXIF()->getIfd0();
+		$ifd0->setTagValues(282, TIFFDataType::URational, [[300, 1]]);
+		$ifd0->setTagValues(283, TIFFDataType::URational, [[150, 1]]);
+		$ifd0->setTagValues(296, TIFFDataType::UShort, [3]);
+		$tiff->setImage($image);
+		$ifd0 = TIFFImage::fromString($tiff->toBinary())->getEXIF()->getIfd0();
+		self::assertSame([[300, 1]], $ifd0->getTag(282)->getValues());
+		self::assertSame([[150, 1]], $ifd0->getTag(283)->getValues());
+		self::assertSame([3], $ifd0->getTag(296)->getValues());
+
+		// One axis stated: the other takes the same, and the unit is not touched.
+		foreach ([282 => 283, 283 => 282] as $stated => $missing) {
+			$tiff = $this->gdTiff();
+			$ifd0 = $tiff->getEXIF()->getIfd0();
+			$ifd0->setTagValues($stated, TIFFDataType::URational, [[300, 1]]);
+			$ifd0->removeTag($missing);
+			$ifd0->setTagValues(296, TIFFDataType::UShort, [3]);
+			$tiff->setImage($image);
+			$ifd0 = TIFFImage::fromString($tiff->toBinary())->getEXIF()->getIfd0();
+			self::assertSame([[300, 1]], $ifd0->getTag($stated)->getValues());
+			self::assertSame([[300, 1]], $ifd0->getTag($missing)->getValues());
+			self::assertSame([3], $ifd0->getTag(296)->getValues());
+		}
+	}
+
+	public function testReplacingTheExifKeepsTheResolutionUnlessTheExifStatesOne()
+	{
+		// Removing the EXIF leaves the resolution with the image, which must have one.
+		$tiff = $this->gdTiff();
+		$tiff->setEXIF(null);
+		$ifd0 = TIFFImage::fromString($tiff->toBinary())->getEXIF()->getIfd0();
+		self::assertSame([[72, 1]], $ifd0->getTag(282)->getValues());
+		self::assertSame([[72, 1]], $ifd0->getTag(283)->getValues());
+		self::assertSame([2], $ifd0->getTag(296)->getValues());
+
+		// So does an EXIF that states none...
+		$exif = new EXIF();
+		$exif->setValueByName('Artist', 'Somebody');
+		$tiff->setEXIF($exif);
+		$ifd0 = $tiff->getEXIF()->getIfd0();
+		self::assertSame('Somebody', $tiff->getEXIF()->getValueByName('Artist'));
+		self::assertSame([[72, 1]], $ifd0->getTag(282)->getValues());
+
+		// ...while one that states its own replaces the image's.
+		$exif->getIfd0()->setTagValues(282, TIFFDataType::URational, [[300, 1]]);
+		$exif->getIfd0()->setTagValues(283, TIFFDataType::URational, [[300, 1]]);
+		$exif->getIfd0()->setTagValues(296, TIFFDataType::UShort, [3]);
+		$tiff->setEXIF($exif);
+		$ifd0 = TIFFImage::fromString($tiff->toBinary())->getEXIF()->getIfd0();
+		self::assertSame([[300, 1]], $ifd0->getTag(282)->getValues());
+		self::assertSame([[300, 1]], $ifd0->getTag(283)->getValues());
+		self::assertSame([3], $ifd0->getTag(296)->getValues());
+	}
+
 	public function testTiffFileRead()
 	{
 		$bytes = $this->tiffBytes();

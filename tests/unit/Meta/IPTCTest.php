@@ -6,6 +6,8 @@ use Belisoful\Image\Meta\IPTC;
 use Belisoful\Image\Meta\IPTCTags;
 use Belisoful\Image\ImageGraphics;
 use Belisoful\Image\ImageGraphicsMode;
+use Belisoful\Image\Photoshop8BIM;
+use Belisoful\Image\PrivacyCategory;
 
 class IPTCTest extends PHPUnit\Framework\TestCase
 {
@@ -1147,6 +1149,125 @@ class IPTCTest extends PHPUnit\Framework\TestCase
 		$iptc[IPTCTags::CaptionAbstract] = 'fresh';
 		self::assertStringContainsString("\x1C\x01", $iptc->toBinary(false));
 		self::assertTrue($iptc->contains(IPTCTags::DateSent));
+	}
+
+	/**
+	 * A block nothing like the one the library would write: datasets out of the order of
+	 * their ids, a repeated one split by another, a name longer than its dataset allows, a
+	 * record out of place holding a number shorter than its type, and padding after the last.
+	 */
+	private function blockAsAnotherWriterLeftIt(): string
+	{
+		return "\x1C\x02\x78\x00\x07caption"
+			. "\x1C\x02\x19\x00\x03one"
+			. "\x1C\x02\x05\x00\x46" . str_repeat('n', 70)
+			. "\x1C\x02\x19\x00\x03two"
+			. "\x1C\x01\x00\x00\x01\x04"
+			. "\x00\x00";
+	}
+
+	public function testASetThatWasOnlyReadIsWrittenBackByteForByte()
+	{
+		$block = $this->blockAsAnotherWriterLeftIt();
+		$iptc = IPTC::parse($block);
+
+		self::assertSame(bin2hex($block), bin2hex($iptc->toBinary(false)));
+		self::assertSame(bin2hex(Photoshop8BIM::iptcEncode($block)), bin2hex($iptc->toBinary(true)));
+
+		// Reading it changes nothing, and it reads in the order the file had.
+		self::assertSame(['one', 'two'], $iptc[IPTCTags::Keywords]);
+		self::assertSame(str_repeat('n', 64), $iptc[IPTCTags::ObjectName]);
+		self::assertSame(4, $iptc[IPTCTags::EnvelopeRecordVersion]);
+		$order = [IPTCTags::CaptionAbstract, IPTCTags::Keywords, IPTCTags::ObjectName, IPTCTags::EnvelopeRecordVersion];
+		self::assertSame($order, array_keys($iptc->toArray()));
+		self::assertSame($order, array_keys(iterator_to_array($iptc)));
+		self::assertSame($order, $iptc->getKeys());
+
+		// Nor does setting what is already there, removing what is not, or a scrub that
+		// finds nothing of its category.
+		$iptc[IPTCTags::CaptionAbstract] = 'caption';
+		unset($iptc[IPTCTags::City]);
+		self::assertSame(0, $iptc->clearPrivateData(PrivacyCategory::Location));
+		self::assertSame(bin2hex($block), bin2hex($iptc->toBinary(false)));
+	}
+
+	public function testAnEditedSetKeepsTheOrderItWasReadIn()
+	{
+		$block = $this->blockAsAnotherWriterLeftIt();
+		$name = "\x1C\x02\x05\x00\x40" . str_repeat('n', 64);
+		$version = "\x1C\x01\x00\x00\x02\x00\x04";
+
+		// A changed value is written where the old one stood; what was read is now written
+		// from its values, a repeated dataset's together where the first of them was.
+		$iptc = IPTC::parse($block);
+		$iptc[IPTCTags::CaptionAbstract] = 'edited';
+		self::assertSame(
+			bin2hex("\x1C\x02\x78\x00\x06edited" . "\x1C\x02\x19\x00\x03one" . "\x1C\x02\x19\x00\x03two" . $name . $version),
+			bin2hex($iptc->toBinary(false)),
+		);
+
+		// A removed dataset leaves the others where they were.
+		$iptc = IPTC::parse($block);
+		unset($iptc[IPTCTags::Keywords]);
+		self::assertSame(bin2hex("\x1C\x02\x78\x00\x07caption" . $name . $version), bin2hex($iptc->toBinary(false)));
+
+		// So does one a scrub removes.
+		$iptc = IPTC::parse($block);
+		self::assertSame(3, $iptc->clearPrivateData(PrivacyCategory::Description));
+		self::assertSame(bin2hex($version), bin2hex($iptc->toBinary(false)));
+	}
+
+	public function testADatasetAddedToASetThatWasReadGoesAheadOfTheNextRecord()
+	{
+		$block = "\x1C\x02\x78\x00\x07caption" . "\x1C\x02\x19\x00\x03one" . "\x1C\x03\x0A\x00\x10" . str_repeat('p', 16);
+		$iptc = IPTC::parse($block);
+
+		// Among its own record's datasets it is the last; a record the file has none of
+		// goes ahead of the first later one, or at the end when there is none.
+		$iptc[IPTCTags::City] = 'London';
+		$iptc[IPTCTags::ServiceIdentifier] = 'svc';
+		$iptc[IPTCTags::IPTCImageWidth] = 640;
+		self::assertSame(
+			[IPTCTags::ServiceIdentifier, IPTCTags::CaptionAbstract, IPTCTags::Keywords, IPTCTags::City, IPTCTags::IPTCPictureNumber, IPTCTags::IPTCImageWidth],
+			array_keys($iptc->toArray()),
+		);
+		self::assertSame(
+			bin2hex("\x1C\x01\x1E\x00\x03svc" . "\x1C\x02\x78\x00\x07caption" . "\x1C\x02\x19\x00\x03one" . "\x1C\x02\x5A\x00\x06London" . "\x1C\x03\x0A\x00\x10" . str_repeat('p', 16) . "\x1C\x03\x14\x00\x02\x02\x80"),
+			bin2hex($iptc->toBinary(false)),
+		);
+
+		// What it was written as is what it reads back as, byte for byte.
+		$written = $iptc->toBinary(false);
+		self::assertSame(bin2hex($written), bin2hex(IPTC::parse($written)->toBinary(false)));
+	}
+
+	public function testASetEmptiedToBeBuiltAgainIsWrittenAsANewOne()
+	{
+		// Even one that held nothing but padding: what it was read from is not written back
+		// once it has been cleared.
+		$block = '';
+		$iptc = IPTC::parse($block);
+		self::assertSame('', $iptc->toBinary(false));
+		$iptc->clear();
+		self::assertStringContainsString("\x1C\x01", $iptc->toBinary(false));
+
+		$block = $this->blockAsAnotherWriterLeftIt();
+		$iptc = IPTC::parse($block);
+		$iptc->clear();
+		$iptc[IPTCTags::Keywords] = ['b', 'a'];
+		$iptc[IPTCTags::ObjectName] = 'name';
+		$keys = array_keys($iptc->toArray());
+		self::assertSame([IPTCTags::ObjectName, IPTCTags::Keywords], $keys, 'a set built from nothing is in the order of its tag ids');
+		self::assertStringContainsString("\x1C\x01", $iptc->toBinary(false));
+	}
+
+	public function testADeclaredSizeBelowNothingReadsAsAnEmptySet()
+	{
+		$source = ["\x1C\x02\x78\x00\x07caption", -5];
+		$iptc = new IPTC();
+		self::assertTrue($iptc->read($source));
+		self::assertCount(0, $iptc);
+		self::assertSame('', $iptc->toBinary(false));
 	}
 
 	public function testABlockOfMoreDatasetsThanThePartCeilingAllowsReadsAsAbsent()

@@ -8,6 +8,8 @@ use Belisoful\Image\ImageFile;
 use Belisoful\Image\ImageGraphics;
 use Belisoful\Image\JPEGImage;
 use Belisoful\Image\JXLImage;
+use Belisoful\Image\Meta\EXIF;
+use Belisoful\Image\Meta\EXIFAudio;
 use Belisoful\Image\PNGImage;
 use Belisoful\Image\RIFFChunkType;
 use Belisoful\Image\RIFFContainer;
@@ -38,9 +40,11 @@ class PartCeilingTest extends PHPUnit\Framework\TestCase
 	{
 		ImageFile::setMemoryBudget(null);
 		ImageFile::setMaxParts(null);
+		ImageFile::setMaxFileSize(null);
 		PNGImage::setMaxInflatedSize(null);
 		ImageGraphics::setMaxPixels(null);
 		ini_set('memory_limit', $this->_memoryLimit);
+		TestIOHelper::removeTempFiles();
 	}
 
 	public function testAMemoryBudgetSetsTheThreeCeilings()
@@ -190,6 +194,131 @@ class PartCeilingTest extends PHPUnit\Framework\TestCase
 				self::fail('a file over its budget was opened');
 			} catch (\UnexpectedValueException $e) {
 				self::assertStringContainsString('parts', $e->getMessage());
+			}
+		}
+	}
+
+	// ---- the file ceiling: the length of a file read whole ----
+
+	private function assertTooLong(callable $open, string $what): void
+	{
+		try {
+			$open();
+			self::fail("$what is over the file ceiling");
+		} catch (\UnexpectedValueException $e) {
+			self::assertStringContainsString('longer than the', $e->getMessage(), $what);
+			self::assertStringContainsString('setMaxFileSize()', $e->getMessage(), $what);
+		}
+	}
+
+	public function testTheFileCeilingFollowsTheBudget()
+	{
+		// No memory limit and so no budget: a file may be any length.
+		self::assertNull(ImageFile::getMaxFileSize());
+		ImageFile::assertFileSize(PHP_INT_MAX);
+
+		// Reading and saving a file peaks at up to 4.4 times its length, so a budget allows
+		// a fifth of itself.  (The limit set here is one the suite's own memory fits under
+		// however it is run: PHP refuses a limit below what is already in use.)
+		ini_set('memory_limit', '16G');
+		self::assertSame(5, ImageFile::BudgetBytesPerFileByte);
+		self::assertSame(intdiv(8 << 30, 5), ImageFile::getMaxFileSize());
+		ImageFile::setMemoryBudget('100M');
+		self::assertSame(20 << 20, ImageFile::getMaxFileSize());
+		// Half of PHP's stock 128M is a budget of 64 MiB, and so a file of 12.8.
+		ImageFile::setMemoryBudget(64 << 20);
+		self::assertSame(13421772, ImageFile::getMaxFileSize());
+
+		// Its own setter moves it alone and outlasts a new budget, until it is handed back.
+		ImageFile::setMaxFileSize(1000);
+		ImageFile::setMemoryBudget('1G');
+		self::assertSame(1000, ImageFile::getMaxFileSize());
+		ImageFile::assertFileSize(1000);   // exactly at the ceiling
+		$this->assertTooLong(fn () => ImageFile::assertFileSize(1001), 'one byte more');
+		ImageFile::setMaxFileSize(null);
+		self::assertSame(intdiv(1 << 30, 5), ImageFile::getMaxFileSize());
+	}
+
+	public function testEveryContainerRefusesAFileLongerThanTheFileCeiling(): void
+	{
+		foreach ($this->filesOfEmptyParts() as $what => [$class, $bytes, $hasLazy]) {
+			$path = TestIOHelper::tempFile($bytes);
+			$opens = [
+				'from a string' => fn () => $class::fromString($bytes),
+				'from a file' => fn () => $class::fromFile($path),
+				'from a resource' => fn () => $class::fromStream(TestIOHelper::dataResource($bytes)),
+				'from a stream' => fn () => $class::fromStream(new TestPsr7Stream($bytes)),
+				'from a file, whatever it holds' => fn () => ImageFile::fromFile($path),
+			];
+			foreach ($opens as $how => $open) {
+				ImageFile::setMaxFileSize(strlen($bytes));
+				self::assertInstanceOf($class, $open(), "$what $how: a file exactly at the ceiling is read");
+				ImageFile::setMaxFileSize(strlen($bytes) - 1);
+				$this->assertTooLong($open, "$what $how");
+			}
+			if ($hasLazy) {
+				// A lazy read holds the structure and leaves the payloads where they are.
+				self::assertInstanceOf($class, $class::fromStreamLazy(TestIOHelper::dataResource($bytes)), "$what, read lazily");
+			}
+		}
+	}
+
+	public function testAStreamIsReadNoFurtherThanTheFileCeiling(): void
+	{
+		$long = $this->png(str_repeat($this->pngChunk('tEXt', str_repeat('a', 100)), 20));
+		ImageFile::setMaxFileSize(100);
+
+		// One byte past the ceiling is all it takes to know, and all that is read.
+		$stream = new TestPsr7Stream($long);
+		$this->assertTooLong(fn () => PNGImage::fromStream($stream), 'a stream');
+		self::assertSame(101, $stream->tell());
+
+		$resource = TestIOHelper::dataResource($long);
+		$this->assertTooLong(fn () => PNGImage::fromStream($resource), 'a resource');
+		self::assertSame(101, ftell($resource));
+
+		// With no memory limit there is no ceiling, and a stream or a file is read to its end.
+		ImageFile::setMaxFileSize(null);
+		self::assertNull(ImageFile::getMaxFileSize());
+		self::assertInstanceOf(PNGImage::class, PNGImage::fromStream(new TestPsr7Stream($long)));
+		self::assertInstanceOf(PNGImage::class, PNGImage::fromFile(TestIOHelper::tempFile($long)));
+
+		// The largest ceiling there is still reads a stream to its end.
+		ImageFile::setMaxFileSize(PHP_INT_MAX);
+		self::assertInstanceOf(PNGImage::class, PNGImage::fromStream(new TestPsr7Stream($long)));
+		self::assertInstanceOf(PNGImage::class, PNGImage::fromStream(TestIOHelper::dataResource($long)));
+	}
+
+	public function testTheOtherWholeFileReadersKeepToTheFileCeiling(): void
+	{
+		$wave = $this->riff('WAVE', $this->chunk('JUNK', str_repeat('a', 64)));
+		$tiff = "MM\x00\x2A\x00\x00\x00\x08" . pack('n', 1) . pack('nnNN', 0x0100, 4, 1, 1) . pack('N', 0);
+		$wavePath = TestIOHelper::tempFile($wave);
+		$tiffPath = TestIOHelper::tempFile($tiff);
+		$opens = [
+			'a RIFF container from a string' => [fn () => RIFFContainer::fromString($wave), strlen($wave)],
+			'a RIFF container from a stream' => [fn () => RIFFContainer::fromStream(new TestPsr7Stream($wave)), strlen($wave)],
+			'a RIFF container from a file' => [fn () => RIFFContainer::fromFile($wavePath), strlen($wave)],
+			'an Exif audio file from a string' => [fn () => EXIFAudio::fromString($wave), strlen($wave)],
+			'an Exif audio file from a stream' => [fn () => EXIFAudio::fromStream(TestIOHelper::dataResource($wave)), strlen($wave)],
+			'an Exif audio file from a file' => [fn () => EXIFAudio::fromFile($wavePath), strlen($wave)],
+			'the EXIF of a TIFF file' => [fn () => EXIF::fromTiffFile($tiffPath), strlen($tiff)],
+		];
+		foreach ($opens as $what => [$open, $length]) {
+			ImageFile::setMaxFileSize($length);
+			self::assertIsObject($open(), "$what: exactly at the ceiling");
+			ImageFile::setMaxFileSize($length - 1);
+			$this->assertTooLong($open, $what);
+		}
+
+		// A file that cannot be opened is still that, not a matter of its length.
+		ImageFile::setMaxFileSize(null);
+		foreach ([fn () => ImageFile::fromFile($tiffPath . '.absent'), fn () => RIFFContainer::fromFile($tiffPath . '.absent'), fn () => EXIFAudio::fromFile($tiffPath . '.absent'), fn () => EXIF::fromTiffFile($tiffPath . '.absent')] as $open) {
+			try {
+				$open();
+				self::fail('a file that is not there was read');
+			} catch (\RuntimeException $e) {
+				self::assertStringContainsString('cannot be read', $e->getMessage());
 			}
 		}
 	}

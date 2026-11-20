@@ -77,10 +77,13 @@ class RIFFContainer
 	/**
 	 * Creates a reader from a raw byte string.
 	 * @param string $bytes The RIFF bytes.
+	 * @throws \UnexpectedValueException When the bytes are longer than the
+	 *   {@see ImageFile::getMaxFileSize() file ceiling}.
 	 * @return static The parsed reader.
 	 */
 	public static function fromString(string $bytes): static
 	{
+		ImageFile::assertFileSize(strlen($bytes));
 		$riff = new static();
 		$riff->parse($bytes);
 		return $riff;
@@ -95,7 +98,7 @@ class RIFFContainer
 	public static function fromStream(mixed $stream): static
 	{
 		StreamIO::rewind($stream);
-		return static::fromString(static::sourceBytes($stream));
+		return static::fromString(static::fileBytes($stream));
 	}
 
 	/**
@@ -181,11 +184,7 @@ class RIFFContainer
 	 */
 	public static function fromFile(string $path): static
 	{
-		$bytes = @file_get_contents($path);
-		if ($bytes === false) {
-			throw new \RuntimeException(sprintf('Image file \'%s\' cannot be read.', $path));
-		}
-		return static::fromString($bytes);
+		return static::fromString(static::readFile($path));
 	}
 
 	/**

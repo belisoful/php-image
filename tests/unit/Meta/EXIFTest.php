@@ -119,6 +119,51 @@ class EXIFTest extends PHPUnit\Framework\TestCase
 		self::assertNull(EXIF::fromSegment($reparsed->toBinary())->getIPTC());
 	}
 
+	public function testIptcIsWrittenAsLongAndReadInAnyType()
+	{
+		$block = "\x1C\x02\x78\x00\x07caption" . "\x1C\x02\x05\x00\x04name";   // 22 bytes: two short of a whole number of four
+		foreach ([false, true] as $bigEndian) {
+			$exif = new EXIF();
+			$exif->getTiff()->setIsBigEndian($bigEndian);
+			$exif->setIPTC(IPTC::parse($block));
+
+			// LONG, padded with zeros, and the datasets in their own order of bytes whatever
+			// the byte order of the file: they are a stream, not numbers.
+			$tag = $exif->getIfd0()->getTag(EXIF::IptcTag);
+			self::assertSame(TIFFDataType::ULong, $tag->getType());
+			self::assertSame(6, $tag->getCount());
+			$binary = $exif->toBinary();
+			self::assertStringContainsString($block . "\0\0", $binary);
+
+			$reparsed = EXIF::fromSegment($binary);
+			self::assertSame(TIFFDataType::ULong, $reparsed->getIfd0()->getTag(EXIF::IptcTag)->getType());
+			self::assertSame('caption', $reparsed->getIPTC()[IPTCTags::CaptionAbstract]);
+			self::assertSame('name', $reparsed->getIPTC()[IPTCTags::ObjectName]);
+		}
+	}
+
+	public function testSettingTheIptcATagAlreadyHoldsLeavesItsTypeAlone()
+	{
+		// Other writers use UNDEFINED or BYTE for this tag.  Read and set back unchanged, it
+		// stays what it was; only a changed set is rewritten, as LONG.
+		$block = "\x1C\x02\x78\x00\x07caption" . "\x1C\x02\x05\x00\x04name";
+		$exif = $this->sampleExif();
+		$exif->getIfd0()->setTagValues(EXIF::IptcTag, TIFFDataType::Undefined, $block);
+		$exif = EXIF::fromSegment($exif->toBinary());
+
+		$iptc = $exif->getIPTC();
+		$exif->setIPTC($iptc);
+		$tag = $exif->getIfd0()->getTag(EXIF::IptcTag);
+		self::assertSame(TIFFDataType::Undefined, $tag->getType());
+		self::assertSame($block, $tag->getValues());
+
+		$iptc[IPTCTags::CaptionAbstract] = 'edited!';
+		$exif->setIPTC($iptc);
+		$tag = $exif->getIfd0()->getTag(EXIF::IptcTag);
+		self::assertSame(TIFFDataType::ULong, $tag->getType());
+		self::assertSame('edited!', EXIF::fromSegment($exif->toBinary())->getIPTC()[IPTCTags::CaptionAbstract]);
+	}
+
 	public function testEmbeddedXmpRoundTrip()
 	{
 		$xml = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/></x:xmpmeta>';

@@ -287,18 +287,89 @@ class StreamIOTraitTest extends PHPUnit\Framework\TestCase
 		});
 	}
 
-	public function testSaveWritesInPlaceWhenTheRenameIsRefused()
+	/**
+	 * Asserts that a save is refused as one that cannot replace the file, and that the
+	 * file and its directory are as they were.
+	 * @param JPEGImage $jpeg
+	 * @param string $path
+	 * @param string $dir
+	 * @param string $why
+	 */
+	private function assertNotReplaced(JPEGImage $jpeg, string $path, string $dir, string $why): void
+	{
+		$original = (string) file_get_contents($path);
+		$before = fileinode($path);
+		try {
+			$jpeg->save($path);
+			self::fail('a file that could not be replaced was reported as saved');
+		} catch (\RuntimeException $e) {
+			self::assertStringContainsString($why, $e->getMessage());
+			self::assertStringContainsString('writeTo()', $e->getMessage());
+		}
+		clearstatcache();
+		self::assertSame($before, fileinode($path));   // the same file, never written over in place
+		self::assertSame(bin2hex($original), bin2hex((string) file_get_contents($path)));
+		self::assertSame(['picture.jpg'], array_values(array_diff((array) scandir($dir), ['.', '..'])));
+	}
+
+	public function testSaveThrowsWhenTheRenameIsRefusedAndLeavesTheFileAsItWas()
 	{
 		$this->withSavedFile(function (string $path, string $dir): void {
-			$before = fileinode($path);
 			$jpeg = TNoRenameJpeg::fromString((string) file_get_contents($path));
 			$jpeg->setEXIF($this->sampleExif());
+			$this->assertNotReplaced($jpeg, $path, $dir, 'renamed over it');
+		});
+	}
 
-			self::assertSame(strlen($jpeg->toBinary()), $jpeg->save($path));
-			clearstatcache();
-			self::assertSame($before, fileinode($path));   // the same file, rewritten
-			self::assertSame(bin2hex($jpeg->toBinary()), bin2hex((string) file_get_contents($path)));
-			self::assertSame(['picture.jpg'], array_values(array_diff((array) scandir($dir), ['.', '..'])));
+	public function testSaveThrowsWhenTheDirectoryTakesNoTemporaryFile()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			// The file itself can be written, which is what a write in place would have
+			// used; its directory takes no new file, so there is nothing to rename.
+			chmod($dir, 0o555);
+			try {
+				if (@touch($dir . '/probe')) {
+					self::markTestSkipped('this user writes to a read-only directory');
+				}
+				$this->assertNotReplaced($this->editedJpeg($path), $path, $dir, 'temporary file');
+			} finally {
+				chmod($dir, 0o755);
+			}
+		});
+	}
+
+	public function testSaveIntoADirectoryThatDoesNotExistThrows()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			try {
+				$this->editedJpeg($path)->save($dir . '/absent/picture.jpg');
+				self::fail('a file was saved into a directory that does not exist');
+			} catch (\RuntimeException $e) {
+				self::assertStringContainsString('temporary file', $e->getMessage());
+			}
+			self::assertFalse(is_dir($dir . '/absent'));
+		});
+	}
+
+	public function testSaveToANewFileWritesIt()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			$jpeg = $this->editedJpeg($path);
+			self::assertSame(strlen($jpeg->toBinary()), $jpeg->save($dir . '/copy.jpg'));
+			self::assertSame(bin2hex($jpeg->toBinary()), bin2hex((string) file_get_contents($dir . '/copy.jpg')));
+			self::assertSame(['copy.jpg', 'picture.jpg'], array_values(array_diff((array) scandir($dir), ['.', '..'])));
+		});
+	}
+
+	public function testSaveOverAFileWhoseNameIsAsLongAsANameMayBe()
+	{
+		$this->withSavedFile(function (string $path, string $dir): void {
+			// The temporary file is not named after the target, so there is room for it.
+			$long = $dir . '/' . str_repeat('n', 251) . '.jpg';
+			copy($path, $long);
+			$jpeg = $this->editedJpeg($long);
+			self::assertSame(strlen($jpeg->toBinary()), $jpeg->save($long));
+			self::assertSame(bin2hex($jpeg->toBinary()), bin2hex((string) file_get_contents($long)));
 		});
 	}
 
@@ -306,7 +377,7 @@ class StreamIOTraitTest extends PHPUnit\Framework\TestCase
 	{
 		$this->withSavedFile(function (string $path, string $dir): void {
 			$jpeg = $this->editedJpeg($path);
-			// A directory is never renamed over: the plain write is tried and refuses it.
+			// A directory is not a file to replace: the plain write is tried and refuses it.
 			try {
 				$jpeg->save($dir);
 				self::fail('a directory was written over');

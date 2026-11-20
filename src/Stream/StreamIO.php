@@ -29,24 +29,45 @@ use Psr\Http\Message\StreamInterface;
  */
 class StreamIO
 {
+	/** @var int The bytes asked of a stream at a time when a read is bounded. */
+	public const ReadSize = 0x100000;
+
 	/**
 	 * Reads a byte source in full, from its current position.  A string passes through
 	 * unchanged, so a caller can hand any of the three accepted forms straight in.
 	 * @param mixed $source A string, {@see StreamInterface}, or PHP stream resource.
+	 * @param ?int $limit The most bytes to read from a stream, or null to read to its end.
+	 *   A caller that must not hold more than a ceiling asks for one byte over it, and
+	 *   getting that many is how it knows the source is longer.
 	 * @throws \InvalidArgumentException When the source is none of those.
 	 * @return string The bytes.
 	 */
-	public static function readAll(mixed $source): string
+	public static function readAll(mixed $source, ?int $limit = null): string
 	{
 		if (is_string($source)) {
 			return $source;
 		}
-		if ($source instanceof StreamInterface) {
+		$isStream = $source instanceof StreamInterface;
+		if ($isStream && $limit === null) {
 			return $source->getContents();
 		}
-		if (is_resource($source)) {
+		if (is_resource($source) && $limit === null) {
 			$data = stream_get_contents($source);
 			return $data === false ? '' : $data;
+		}
+		if ($isStream || is_resource($source)) {
+			// Gathered a piece at a time: asked for a length, PHP's own whole-stream read
+			// allocates all of it before it reads any, however short the stream is.
+			$data = '';
+			while (strlen($data) < $limit) {
+				$want = min($limit - strlen($data), self::ReadSize);
+				$piece = (string) ($isStream ? $source->read($want) : fread($source, $want));
+				if ($piece === '') {
+					break;   // the end, or a stream that yields nothing: it is not waited on
+				}
+				$data .= $piece;
+			}
+			return $data;
 		}
 		throw new \InvalidArgumentException(sprintf('A byte source must be a string, PSR-7 StreamInterface, or PHP stream resource; \'%s\' given.', get_debug_type($source)));
 	}

@@ -27,6 +27,31 @@ class StreamIOTest extends PHPUnit\Framework\TestCase
 		self::assertSame('body', StreamIO::readAll($psr7), 'It drains from where the source is, not from 0.');
 	}
 
+	public function testReadAllStopsAtALimit()
+	{
+		// A string is already held, so it passes through whole whatever the limit.
+		self::assertSame('literal', StreamIO::readAll('literal', 3));
+
+		// A stream is read no further than the limit, and stays where the read left it.
+		$psr7 = new TestPsr7Stream('abcdef');
+		self::assertSame('abcd', StreamIO::readAll($psr7, 4));
+		self::assertSame(4, $psr7->tell());
+		self::assertSame('abcdef', StreamIO::readAll(new TestPsr7Stream('abcdef'), 99), 'A limit past the end reads to the end.');
+		self::assertSame('', StreamIO::readAll(new TestPsr7Stream('abcdef'), 0));
+
+		$resource = TestIOHelper::dataResource('abcdef');
+		self::assertSame('abcd', StreamIO::readAll($resource, 4));
+		self::assertSame(4, ftell($resource));
+		self::assertSame('abcdef', StreamIO::readAll(TestIOHelper::dataResource('abcdef'), 99));
+
+		// A stream longer than one read is gathered a piece at a time.
+		$long = str_repeat('x', StreamIO::ReadSize + 10);
+		self::assertSame(StreamIO::ReadSize + 5, strlen(StreamIO::readAll(new TestPsr7Stream($long), StreamIO::ReadSize + 5)));
+
+		// A stream that neither ends nor yields anything is not waited on.
+		self::assertSame('ab', StreamIO::readAll(new TestScriptedStream(['ab', '', 'cd']), 99));
+	}
+
 	public function testReadAllRejectsAnythingElse()
 	{
 		self::expectException(\InvalidArgumentException::class);

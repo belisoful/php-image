@@ -195,15 +195,16 @@ class PhotoshopIRB implements \IteratorAggregate, \Countable, PrivacyScrubbableI
 	}
 
 	/**
-	 * Sets (or removes, when null) the embedded IPTC record set.
+	 * Sets (or removes, when null) the embedded IPTC record set.  A resource already
+	 * holding those very bytes is left as it is, name and all.
 	 * @param ?IPTC $iptc The IPTC, or null to remove the resource.
 	 */
 	public function setIPTC(?IPTC $iptc): void
 	{
 		if ($iptc === null) {
 			$this->removeResource(PhotoshopResource::IptcNaa);
-		} else {
-			$this->setResource(new PhotoshopResource(PhotoshopResource::IptcNaa, $iptc->toBinary(null, false)));
+		} elseif ($this->getResource(PhotoshopResource::IptcNaa)?->getData() !== ($data = $iptc->toBinary(null, false))) {
+			$this->setResource(new PhotoshopResource(PhotoshopResource::IptcNaa, $data));
 		}
 	}
 
