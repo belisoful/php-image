@@ -28,6 +28,15 @@ This is a one-maintainer project. Reports are acknowledged as they are read, fix
 repositories together, and credited in the changelog unless you would rather not be named.
 Please give a fix the chance to ship before publishing details.
 
+## Advisories
+
+A reported vulnerability is fixed in a tagged release, and an advisory is published with that
+release at <https://github.com/belisoful/php-image/security/advisories>. It says what
+was wrong, which versions are affected and which is patched, and carries a CVE identifier.
+Advisories are filed for both Composer packages, `belisoful/php-image` and
+`belisoful/prado-image`, so `composer audit` and Dependabot report them to anyone who depends
+on either.
+
 ## Supported versions
 
 The library is pre-1.0. Fixes land in the next release; earlier releases are not patched.

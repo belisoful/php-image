@@ -100,13 +100,13 @@ makes a record of — segments, chunks, boxes, blocks, directory entries — aga
 `ImageFile::getMaxParts()`, plus one more for every 256 bytes of the file, so a file of nothing
 but empty parts is refused while a large file of ordinary ones never is (`setMaxParts()` moves
 it). And a file longer than `ImageFile::getMaxFileSize()` is not read whole (`setMaxFileSize()`
-moves it): reading one and writing it back holds up to four and a half times its length, so
+moves it): reading one and writing it back holds three to four times its length, so
 `fromFile()` and `fromStream()` stop a byte past the ceiling and throw, where the alternative
 is running out of memory, which no caller can catch. A longer file is opened with a lazy reader
 (`fromStreamLazy()`), which leaves the payloads where they are.
 
 All four are sized from one number, the memory budget, which is half of PHP's `memory_limit`
-unless one is set: under the stock 128M that is a file of 12.8 MiB, 32,768 parts, 8 MiB inflated
+unless one is set: under the stock 128M that is a file of 16 MiB, 32,768 parts, 8 MiB inflated
 and about four million pixels (a 2048 by 2048 raster), and a larger limit allows more in
 proportion. A process with no memory limit has no budget: a file may then be any length, and
 the other ceilings are 65,536 parts, 16 MiB and 2^28 pixels. `ImageFile::setMemoryBudget()` takes
@@ -197,6 +197,7 @@ composer require belisoful/php-image
 | `TIFFRaster` | The TIFF raster decoder behind `TIFFImage::getImage()`: strips and tiles, chunky and planar, either byte order and fill order, unsigned, signed and floating-point samples of 1 to 64 bits with either predictor, and the bilevel/grayscale/palette/RGB/CMYK/YCbCr/L\*a\*b\* photometrics, normalized to 8-bit RGB |
 | `TIFFDocument` / `TIFFIfd` / `TIFFTag` / `TIFFDataType` | The TIFF 6.0 engine: tolerant parsing (warnings, not failures), offset-recomputing composition with pinned value areas, and all twelve data types |
 | `PrivacyScrubbableInterface` | The privacy contract: `clearPrivateData(int $types = PrivacyCategory::All): int` on every metadata carrier and every image container |
+| `ConformableInterface` / `ConformanceCategory` | The conformance contract: `validate()` reports where metadata departs from its specification, `conform()` corrects it by category, on every metadata carrier and every image container |
 | `PrivacyCategory` | The identifying-information categories `clearPrivateData()` removes, one bit each (Location, Author, Description, CameraModel, SerialNumber, Timestamp, Software, MakerNote, Thumbnail, Interoperability) with the `Identity`/`Provenance` presets and `All` (-1); its docblock tabulates what each flag removes in each carrier |
 | `EXIF` | The EXIF model: named IFDs, tag access by name (`getValueByName('FNumber')`), interpreted text (`getTextByName`), the IFD1 thumbnail, the embedded IPTC/XMP/IRB/PIM/makernote bridges, the private-space stream views that protect the maker notes on write, and `clearPrivateData()` for privacy scrubbing by category |
 | `EXIFTags` | The EXIF-family tag knowledge base: TIFF/EXIF/GPS/Interoperability/Kodak groups with names, lookups, units, and special decoders |
@@ -349,6 +350,58 @@ value is the number of items removed, and a second call removes nothing. IIM mak
 IPTC envelope's date and number mandatory, so the scrub replaces an existing envelope
 date with a fixed synthetic sentinel (`IPTC::ScrubbedDate`) and re-derives the number
 from it, instead of letting the next write stamp today's date back in.
+
+### Checking and correcting metadata
+
+A file that is read and saved comes back as it was, including whatever in it departs from the
+specifications — that is the point of a rewrite that changes nothing. `validate()` says what
+those departures are, and `conform()` puts them right when you ask:
+
+```php
+use Belisoful\Image\ConformanceCategory;
+use Belisoful\Image\JPEGImage;
+
+$jpeg = JPEGImage::fromFile('photo.jpg');
+foreach ($jpeg->validate() as $what => $problem) {
+    echo "$what: $problem\n";      // EXIF ExifIFD:ColorSpace: required and missing
+}
+$jpeg->conform();                  // corrects what has an honest fix; returns how many
+$jpeg->save('photo-out.jpg');
+```
+
+Every carrier answers both — `EXIF`, `XMP`, `IPTC`, `PhotoshopIRB` — and so does every
+container, which reports each of its carriers under its name. The categories are flags, as
+with privacy: `Type` (a field in the wrong type or form — a TIFF's IPTC tag not stored as LONG,
+an XMP property not in its schema's form), `Required` (a field the specification demands and
+gives the value for — the Exif version, a TIFF's resolution, an IPTC record version),
+`Structure`, `Invented` and `Advisory`. `conform()` takes `Safe` by default, which leaves out
+`Invented`: the IPTC envelope's sender, date and number are required, but writing them says
+something about the file that nobody recorded, so they are written only for
+`conform(ConformanceCategory::Invented)` or `All`. `Advisory` findings are reported and never
+changed. The rules are the specifications' own; where ExifTool is installed the tests ask it
+to validate what `conform()` wrote.
+
+### Using your own classes
+
+Every class the library creates is named by a constant on the class that creates it, so a
+subclass can name its own:
+
+```php
+class MyExif extends EXIF { /* … */ }
+
+class MyJpeg extends JPEGImage
+{
+    public const ExifClass = MyExif::class;
+}
+
+$exif = MyJpeg::fromFile('photo.jpg')->getEXIF();   // a MyExif
+```
+
+The same holds all the way down — a container's EXIF, XMP, IPTC, resource block and
+chunks or boxes; an EXIF's TIFF document, its directories and fields; the graphics facade a
+container draws through and the GD or ImageMagick library behind it; a TIFF's fax codec. To
+have `ImageFile::fromFile()` open your containers, name them on an abstract subclass
+(`JpegClass`, `PngClass`, … `TiffClass`) and call the factory on that.
 
 ### Private spaces: editing around the maker notes
 

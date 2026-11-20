@@ -12,6 +12,25 @@ so.
 
 ### Added
 
+- **Conformance**: `validate()` and `conform()` on every metadata carrier (`EXIF`, `XMP`,
+  `IPTC`, `PhotoshopIRB`) and every container, through `ConformableInterface`. `validate()`
+  reports where metadata departs from its specification and changes nothing; `conform()`
+  corrects it. Both take `ConformanceCategory` flags: `Type` (a TIFF's IPTC tag not stored as
+  LONG, an XMP property not in its schema's form), `Required` (the fields Exif requires of a
+  JPEG's or a TIFF's metadata, the IPTC record versions), `Structure`, `Invented` (the IPTC
+  envelope's sender, date and number) and `Advisory` (a JPEG's extended XMP packet not named by
+  its MD5 digest, which is read all the same). `conform()` defaults to `Safe`, which leaves out
+  what would have to be invented. A container reports each carrier under its name and adds
+  what only it knows — a JPEG's pixel dimensions.
+- **Classes a subclass can replace**: every class the library creates is named by a class
+  constant on the class that creates it and resolved with `static::` — `ExifClass`,
+  `XmpClass`, `IptcClass`, `IrbClass`, `ChunkClass`, `BoxClass`, `FrameClass`, `TagClass` and
+  the rest — so a subclass that names its own class has that created instead. An abstract
+  subclass of `ImageFile` names its own containers (`JpegClass` … `TiffClass`) to have the
+  format-detecting factories open them; `ImageGraphics` names its GD and ImageMagick
+  libraries, a container the facade it draws through, a TIFF its fax codec and raster
+  decoder, and `Makernote` its maker classes (`MakerClasses`, `GenericClass`). The byte
+  readers, bit IO, codec halves and static utilities stay as they are.
 - **A part ceiling**: `ImageFile::getMaxParts()`, `setMaxParts()`, `assertPartCount()` and
   `allowsPartCount()`. Every parser counts the parts it makes a record of — JPEG segments, PNG
   and RIFF chunks, ISO BMFF boxes at every depth, GIF blocks and data sub-blocks, TIFF directory
@@ -54,23 +73,22 @@ so.
 - **A shared ISO BMFF box model** (`BMFFBox`), lifted out of the JUMBF reader: the 32-bit
   size, the 64-bit and run-to-the-end forms, `uuid` user types and depth-capped nesting.
 - **A file ceiling**: `ImageFile::getMaxFileSize()`, `setMaxFileSize()` and `assertFileSize()`.
-  A file read whole is held in memory, held again as the parts it is made of, and twice more
-  while it is written back: measured, 3.0 times its length for a JPEG, 4.0 to 4.1 for the other
-  containers and 4.4 for a GIF of full sub-blocks, so a 50 MB file ended a process running
-  under the stock 128M. `fromFile()`, `fromStream()` and `fromString()` now throw
-  `\UnexpectedValueException` for a file longer than the ceiling, and the first two read no
-  further than one byte past it. The ceiling is a fifth of the memory budget — 12.8 MiB under
-  the stock 128M — and none where the process has no memory limit. The lazy readers
-  (`fromStreamLazy()`) hold only a file's structure and are not subject to it; with
-  `streamTo()` they are how a longer file is read and rewritten. `RIFFContainer`, `EXIFAudio`
-  and `EXIF::fromTiffFile()` keep to it as well.
+  A file read whole is held in memory, held again as the parts it is made of, and once more
+  while it is written back: measured, 3.0 to 3.2 times its length and 3.8 for a GIF of full
+  sub-blocks, so a 50 MB file ended a process running under the stock 128M. `fromFile()`,
+  `fromStream()` and `fromString()` now throw `\UnexpectedValueException` for a file longer
+  than the ceiling, and the first two read no further than one byte past it. The ceiling is a
+  quarter of the memory budget — 16 MiB under the stock 128M — and none where the process has
+  no memory limit. The lazy readers (`fromStreamLazy()`) hold only a file's structure and are
+  not subject to it; with `streamTo()` they are how a longer file is read and rewritten.
+  `RIFFContainer`, `EXIFAudio` and `EXIF::fromTiffFile()` keep to it as well.
 - **A memory budget**: the four ceilings are sized from one number — one byte of a file read
-  whole for every 5 bytes of it, one part for every 2,048, one inflated byte for every 8, one
+  whole for every 4 bytes of it, one part for every 2,048, one inflated byte for every 8, one
   decoded pixel for every 16. The ratios are measured peaks with room to spare: a hex-encoded
   raw profile peaks at 4.4 times its inflated length, and a TIFF raster decoded to an image at
   9 bytes a pixel. Unless one is set the budget is half of PHP's `memory_limit`, read each time
   it is asked for, so a file that would not fit the limit the process really runs under is
-  refused with an exception instead of ending it: under the stock 128M that is a file of 12.8
+  refused with an exception instead of ending it: under the stock 128M that is a file of 16
   MiB, 32,768 parts, 8 MiB inflated and about four million pixels. A process with no memory
   limit has no budget: a file may be any length and the others keep the fixed defaults (65,536
   parts, 16 MiB, 2^28 pixels). `ImageFile::setMemoryBudget()` takes a number of bytes, a size
@@ -217,6 +235,20 @@ let a small file stop a PHP process or leave data behind that the caller had rem
 
 ### Changed
 
+- **`IPTC::validate()` reports; it no longer changes the set.** Completing the envelope and
+  the record versions, which it used to do, is `IPTC::conform()`; `toBinary()` still does it
+  for a set built from nothing. `XMP::validate()` takes the same category flags as the rest.
+- **Writing a file holds it once, not twice.** Each container appended every payload to its
+  header and that to the output, so a file of one large chunk, box or strip was held two
+  more times while it was written. They now gather the pieces and join them once
+  (`BMFFBox::toParts()`, `GIFFrame::toParts()`), which brought reading and saving from 4.0–4.4
+  times the file's length to 3.0–3.2 (3.8 for a GIF of full sub-blocks) and the file
+  ceiling's ratio from five to four.
+- `ImageFile::fromString()`, `fromStream()` and `fromFile()` declare `self` as their return
+  type, so an abstract subclass can dispatch to containers that do not extend it; called on
+  a container they return that container, as before.
+- `ImageGraphics` keeps its libraries by class, not by mode name, so a subclass that names
+  another library gets its own.
 - **A missing suggested extension no longer fails as an undefined function.** Without
   `ext-zlib` a compressed PNG chunk reads as absent and writing one throws; without `ext-iconv`
   text that needs converting is read unconverted (or empty, for UTF-16) and encoding a
