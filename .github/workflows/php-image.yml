@@ -68,6 +68,24 @@ jobs:
       - name: Validate code using phpstan
         run: phpstan analyse --error-format=checkstyle | cs2pr
 
+      # ExifTool reads the same specifications independently, so the conformance tests ask
+      # it to validate what the library writes.  It is pinned to one release by its commit,
+      # so a newer ExifTool with a new check cannot fail an unrelated push, and it runs in
+      # this one job; the tests skip wherever it is not installed.
+      - name: Checkout ExifTool 13.64
+        if: ${{ matrix.imagick && matrix.php-versions == '8.3' }}
+        uses: actions/checkout@v7
+        with:
+          repository: exiftool/exiftool
+          ref: 3d7a0538324e9b04aa8930201b007009491321d2
+          path: exiftool
+
+      - name: Put ExifTool on the path
+        if: ${{ matrix.imagick && matrix.php-versions == '8.3' }}
+        run: |
+          chmod +x "$GITHUB_WORKSPACE/exiftool/exiftool"
+          echo "$GITHUB_WORKSPACE/exiftool" >> "$GITHUB_PATH"
+
       - name: Run Unit Tests
         if: ${{ !matrix.imagick }}
         run: composer unittest
