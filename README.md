@@ -90,7 +90,7 @@ describes the picture itself, so what you get back is still a useful photo.
 ranges and bridged to the framework's reserved-space streams, so a consumer can edit around
 them with the same protection the writer itself applies.
 
-Files from strangers get three ceilings, because a parser that takes a file at its word can
+Files from strangers get four ceilings, because a parser that takes a file at its word can
 be made to ask for gigabytes by a file of a few hundred bytes. A compressed PNG chunk inflates
 to at most `PNGImage::getMaxInflatedSize()` (`setMaxInflatedSize()` moves it) and reads as absent
 past it. The pure-PHP raster decoders refuse a TIFF or GIF frame that declares more pixels than
@@ -99,19 +99,22 @@ decodes the pixels, so that one does not apply there. And every parser counts th
 makes a record of — segments, chunks, boxes, blocks, directory entries — against
 `ImageFile::getMaxParts()`, plus one more for every 256 bytes of the file, so a file of nothing
 but empty parts is refused while a large file of ordinary ones never is (`setMaxParts()` moves
-it).
+it). And a file longer than `ImageFile::getMaxFileSize()` is not read whole (`setMaxFileSize()`
+moves it): reading one and writing it back holds up to four and a half times its length, so
+`fromFile()` and `fromStream()` stop a byte past the ceiling and throw, where the alternative
+is running out of memory, which no caller can catch. A longer file is opened with a lazy reader
+(`fromStreamLazy()`), which leaves the payloads where they are.
 
-All three are sized from one number, the memory budget, which is half of PHP's `memory_limit`
-unless one is set: under the stock 128M that is 32,768 parts, 8 MiB inflated and about four
-million pixels (a 2048 by 2048 raster), and a larger limit allows more in proportion. A process
-with no memory limit has no budget, and the ceilings are then 65,536 parts, 16 MiB and 2^28
-pixels. `ImageFile::setMemoryBudget()` takes a number of bytes, a size in PHP's own shorthand
-(`'256M'`, `'1G'`) or a share of the limit (`'25%'`); a ceiling moved by its own setter keeps
-that value whatever the budget, until the setter is given `null`. The ratios behind it are
-measured peaks, not a meter — the limit is configuration and nothing watches memory while a
-file is read, so a file opens or is refused the same way whatever else the application holds.
-No ceiling covers the length of the file itself: reading one whole holds it and the rebuilt
-copy in memory.
+All four are sized from one number, the memory budget, which is half of PHP's `memory_limit`
+unless one is set: under the stock 128M that is a file of 12.8 MiB, 32,768 parts, 8 MiB inflated
+and about four million pixels (a 2048 by 2048 raster), and a larger limit allows more in
+proportion. A process with no memory limit has no budget: a file may then be any length, and
+the other ceilings are 65,536 parts, 16 MiB and 2^28 pixels. `ImageFile::setMemoryBudget()` takes
+a number of bytes, a size in PHP's own shorthand (`'256M'`, `'1G'`) or a share of the limit
+(`'25%'`); a ceiling moved by its own setter keeps that value whatever the budget, until the
+setter is given `null`. The ratios behind it are measured peaks, not a meter — the limit is
+configuration and nothing watches memory while a file is read, so a file opens or is refused
+the same way whatever else the application holds.
 
 ## Streams
 

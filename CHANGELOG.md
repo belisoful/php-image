@@ -25,6 +25,8 @@ so.
   is its EXIF IFD0, so every tag outside `TIFFImage::ImageTags` (the raster and layout tags plus
   the XMP, IPTC, IRB and ICC carriers) is removed and the given EXIF's other IFD0 tags are copied
   in, its EXIF, GPS and Interoperability IFDs as deep copies. `null` leaves only the image tags.
+  The resolution (`TIFFImage::ResolutionTags`) stays with the image as well, unless the given EXIF
+  states its own.
 - **Trailing data** on JPEG and GIF: `getTrailingData()` and `removeTrailingData()`. On a JPEG
   that is everything after the first top-level EOI — MPF secondary images, motion-photo video,
   any appended file — and removing it also drops the APP2 `MPF` index that addressed it. A
@@ -51,23 +53,34 @@ so.
   rewrite updates to what it actually wrote.
 - **A shared ISO BMFF box model** (`BMFFBox`), lifted out of the JUMBF reader: the 32-bit
   size, the 64-bit and run-to-the-end forms, `uuid` user types and depth-capped nesting.
-- **A memory budget**: the three ceilings are sized from one number — one part for every
-  2,048 bytes of it, one inflated byte for every 8, one decoded pixel for every 16. The ratios
-  are measured peaks with room to spare: a hex-encoded raw profile peaks at 4.4 times its
-  inflated length, and a TIFF raster decoded to an image at 9 bytes a pixel. Unless one is set
-  the budget is half of PHP's `memory_limit`, read each time it is asked for, so a file that
-  would not fit the limit the process really runs under is refused with an exception instead
-  of ending it: under the stock 128M that is 32,768 parts, 8 MiB inflated and about four
-  million pixels. A process with no memory limit has no budget and keeps the fixed defaults
-  (65,536 parts, 16 MiB, 2^28 pixels). `ImageFile::setMemoryBudget()` takes a number of bytes, a
-  size in PHP's own shorthand (`'256M'`, `'1G'`) or a share of the limit (`'25%'`), and
+- **A file ceiling**: `ImageFile::getMaxFileSize()`, `setMaxFileSize()` and `assertFileSize()`.
+  A file read whole is held in memory, held again as the parts it is made of, and twice more
+  while it is written back: measured, 3.0 times its length for a JPEG, 4.0 to 4.1 for the other
+  containers and 4.4 for a GIF of full sub-blocks, so a 50 MB file ended a process running
+  under the stock 128M. `fromFile()`, `fromStream()` and `fromString()` now throw
+  `\UnexpectedValueException` for a file longer than the ceiling, and the first two read no
+  further than one byte past it. The ceiling is a fifth of the memory budget — 12.8 MiB under
+  the stock 128M — and none where the process has no memory limit. The lazy readers
+  (`fromStreamLazy()`) hold only a file's structure and are not subject to it; with
+  `streamTo()` they are how a longer file is read and rewritten. `RIFFContainer`, `EXIFAudio`
+  and `EXIF::fromTiffFile()` keep to it as well.
+- **A memory budget**: the four ceilings are sized from one number — one byte of a file read
+  whole for every 5 bytes of it, one part for every 2,048, one inflated byte for every 8, one
+  decoded pixel for every 16. The ratios are measured peaks with room to spare: a hex-encoded
+  raw profile peaks at 4.4 times its inflated length, and a TIFF raster decoded to an image at
+  9 bytes a pixel. Unless one is set the budget is half of PHP's `memory_limit`, read each time
+  it is asked for, so a file that would not fit the limit the process really runs under is
+  refused with an exception instead of ending it: under the stock 128M that is a file of 12.8
+  MiB, 32,768 parts, 8 MiB inflated and about four million pixels. A process with no memory
+  limit has no budget: a file may be any length and the others keep the fixed defaults (65,536
+  parts, 16 MiB, 2^28 pixels). `ImageFile::setMemoryBudget()` takes a number of bytes, a size
+  in PHP's own shorthand (`'256M'`, `'1G'`) or a share of the limit (`'25%'`), and
   `getMemoryBudget()` reads it back. A ceiling moved by its own setter keeps that value
-  whatever budget is set before or after, until the setter is given `null`. It is not a
-  meter — the limit is configuration and nothing watches memory while a file is read, so a
-  file opens or is refused the same way whatever else the application holds — and it does not
-  cover the length of the file itself.
+  whatever budget is set before or after, until the setter is given `null`. It is not a meter —
+  the limit is configuration and nothing watches memory while a file is read, so a file opens
+  or is refused the same way whatever else the application holds.
   `PNGImage::getMaxInflatedSize()` and `setMaxInflatedSize()` come with it, so the inflation
-  ceiling moves at run time like the other two.
+  ceiling moves at run time like the others.
 - **A pixel ceiling** on the pure-PHP raster decoders: `ImageGraphics::getMaxPixels()` and
   `setMaxPixels()`, 2^28 with no memory limit (a 16384 by 16384 raster). `TIFFImage::getImage()` and
   `GIFFrame::getPixels()` size their buffers from the dimensions a file states, so a TIFF of
@@ -114,16 +127,38 @@ let a small file stop a PHP process or leave data behind that the caller had rem
 - `save()` wrote over the file in place, so a write that failed part-way — a full disk — left
   half a file where the original had been. It now writes a temporary file beside the target
   and renames it over, keeping the target's permission bits and following a symbolic link to
-  the file it names; a short write removes the temporary file and throws, the original
-  untouched. Where no rename is to be had the bytes are written in place as before: a
-  stream-wrapper path, a target that is not a regular file, a directory that refuses the
-  temporary file or the rename. `EXIFAudio::save()` goes the same way, both through
-  `StreamIOTrait::writeFile()`.
+  the file it names. Whatever stops that throws `\RuntimeException` and leaves the original
+  untouched: a short write, a directory that takes no temporary file, a rename that is
+  refused. The bytes are never written over the file in place instead; a caller who wants
+  that hands `writeTo()` a handle it opened. Only where there is no file to replace is the
+  write direct: a stream-wrapper path, a target that is not a regular file.
+  `EXIFAudio::save()` goes the same way, both through `StreamIOTrait::writeFile()`.
 - Rewriting a file stamped an IPTC envelope on it. `IPTC::toBinary()` completed every set with
   the mandatory envelope record, so a JPEG whose IPTC had none — most of them — came back from
   a rewrite with today's date in `DateSent` and an `EnvelopeNumber` derived from it, edited or
   not. A set read from bytes is now written with the datasets it holds; a set built from
   nothing is still completed, and `validate()` completes either on request.
+- An IPTC record set came back from a rewrite in other bytes than it went in. Its datasets
+  were sorted by tag id, a repeated dataset split by another was gathered, text was trimmed
+  or padded to its dataset's bounds and re-encoded, and padding after the last dataset was
+  dropped — all without an edit. A set that was only read is now written back byte for byte;
+  an edited one keeps the order the file had, a repeated dataset's values together where the
+  first stood and a new dataset ahead of the first of a later record. Only a set built from
+  nothing is written in the order of its tag ids. `PhotoshopIRB::setIPTC()` leaves a resource
+  already holding those bytes as it is, name included.
+- A TIFF's IPTC tag (33723) was written as UNDEFINED, which `exiftool -validate` warns about.
+  It is written as LONG, the type Photoshop gave it: zero-padded to a whole number of four
+  bytes, the datasets in their own order whatever the byte order of the file. A tag read as
+  UNDEFINED or BYTE and not changed keeps its type and its bytes.
+- A TIFF written from an image (`TIFFImage::fromImage()`, `setImage()`) had no XResolution or
+  YResolution, which baseline TIFF requires and `exiftool -validate` warns about. A raster
+  that states no resolution is now given 72 pixels an inch; a resolution the file already
+  states is kept, and where it states one axis the other takes the same.
+- A TIFF's IPTC was rewritten on every save, changed or not, and always into tag 33723: a file
+  keeping it only in its Photoshop resources gained the tag, and an edit left the resources'
+  copy as it was, so the file held two that disagreed. `TIFFImage` now writes only a set that
+  differs from the one it read, to the tag and into the Photoshop resources where they hold
+  a copy.
 - Extended XMP in a JPEG was read whether or not the main packet named it. With no
   `xmpNote:HasExtendedXMP`, or one naming a digest no segment carried, the first extended
   packet in the file was merged anyway — which is what an editor leaves behind when it

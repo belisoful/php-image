@@ -34,10 +34,11 @@ The library is pre-1.0. Fixes land in the next release; earlier releases are not
 
 ## Limits you can set
 
-Three ceilings bound what an untrusted file can cost, and each can be moved:
+Four ceilings bound what an untrusted file can cost, and each can be moved:
+`ImageFile::setMaxFileSize()` for the length of a file read whole,
 `PNGImage::setMaxInflatedSize()` for compressed PNG chunks, `ImageGraphics::setMaxPixels()` for
 the pure-PHP raster decoders, and `ImageFile::setMaxParts()` for the number of structural parts
-a file may hold. All three are sized from a memory budget: half of PHP's `memory_limit` unless
+a file may hold. All four are sized from a memory budget: half of PHP's `memory_limit` unless
 `ImageFile::setMemoryBudget()` says otherwise, in bytes, as a size such as `'256M'`, or as a share
 of the limit such as `'25%'`. The README
 paragraph that begins "Files from strangers" describes them.
